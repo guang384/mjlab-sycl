@@ -3,7 +3,7 @@ requires = ["uv_build>=0.8.19,<0.9.0"]
 build-backend = "uv_build"
 
 [project]
-name = "mjlab-sycl"
+name = "warp-sycl"
 version = "0.1.0"
 description = "Intel GPU (SYCL) training support for mjlab: warp-sycl runtime patch + barrier-free flat kernels + a select_gpus-free train entry"
 readme = "README-SYCL-TRAINING.md"
@@ -17,5 +17,5 @@ dependencies = [
 ]
 
 [project.scripts]
-mjlab-sycl-train = "mjlab_sycl.train:main"
-mjlab-sycl-bench = "mjlab_sycl.bench:main"
+warp-sycl-train = "warp_sycl.train:main"
+warp-sycl-bench = "warp_sycl.bench:main"
