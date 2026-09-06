@@ -305,3 +305,14 @@ SYCL build). Off by default; `MJLAB_SYCL=1` wires everything through
   robot, with the correct command-slot writes (a posture flag lives in the
   twist vx slot; feeding all-zeros means "stand", which looks like "policy
   ignores the button").
+
+## Known limitations (beyond the warp backend's own gaps)
+
+- **Non-BAM actuator tasks produce NaN observations on the sycl path**
+  (verified: Mjlab-Cartpole-Balance, Mjlab-Velocity-Flat-Unitree-Go1; CPU
+  native runs of the same seeds are clean). The NaN appears in every obs
+  column from the first env.step, while qacc/qpos show no corruption at any
+  launch boundary we can observe — the corrupting write happens inside the
+  un-intercepted launch_tiled path (mjlab's built-in actuator/sensor kernel
+  family). Microduck-family tasks (BAM actuators) are unaffected. Status:
+  under investigation; use the cpu device for non-microduck tasks meanwhile.
