@@ -131,4 +131,4 @@ def patch_simulation_for_sycl() -> None:
   sim_mod.Simulation.recompute_constants = drained(orig_recompute)
 
   # barrier-free flat rewrites of the hottest tiled kernels
-  sycl_flat.install()
+  flat_kernels.install()
