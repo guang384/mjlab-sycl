@@ -321,3 +321,11 @@ SYCL build). Off by default; `MJLAB_SYCL=1` wires everything through
   auto-copied to device, matching CUDA semantics). Microduck-family tasks
   (BAM actuators, all device-resident arrays) are unaffected. Status: open;
   use the cpu device for non-microduck tasks meanwhile.
+
+  Debugging state (scripts/probe_field_hunt.py): a dual-binding launch hook
+  (wp.launch AND warp._src.context.launch, covering the launch_tiled miss
+  path) scanning ALL Data fields at every launch boundary across the whole
+  learn() captured ZERO transitions — the NaN writer is not any wp.launch.
+  Remaining suspects: host-side USM writes through torch/numpy views, or an
+  mjlab-specific data path outside warp. The hook script is ready to extend
+  (add host-write tracing or wire into mjlab's managers).
