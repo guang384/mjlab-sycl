@@ -93,6 +93,25 @@ def _enabled() -> bool:
   )
 
 
+
+_ADR_SIZE_CACHE = {}  # id(adr array) -> tile size (TileSet: uniform across tiles)
+
+
+def _adr_tile_size(adr, unpadded_dim):
+  """TileSet tiles are uniform-size; size = gap between the first two
+  addresses. A single-tile set spans the UNPADDED matrix dimension (callers
+  must pass nv -- the qM/qLD buffers are padded and their garbage rows would
+  poison a Cholesky factorization sized to the padded end; that was the
+  cartpole NaN: qM padded 4x4, tile actually 2x2)."""
+  key = adr.ptr
+  size = _ADR_SIZE_CACHE.get(key)
+  if size is None:
+    a = adr.numpy()
+    size = int(a[1] - a[0]) if len(a) > 1 else int(unpadded_dim)
+    _ADR_SIZE_CACHE[key] = size
+  return size
+
+
 def install() -> None:
   """Wrap wp.launch_tiled to re-route the flat-rewritten kernels on sycl."""
   global _orig_launch_tiled
@@ -117,21 +136,25 @@ def install() -> None:
     key = getattr(kernel, "key", "")
     if key == "_tile_cholesky_factorize__locals__cholesky_factorize" and _enabled():
       adr = kwargs["inputs"][1]
+      # L_out is unpadded: single-tile size = its row dim
+      n = _adr_tile_size(adr, kwargs["outputs"][0].shape[1])
       nworld = nworld_from(kwargs)
       return wp.launch(
         _cholesky_factorize_tiles_flat,
         dim=(nworld, adr.shape[0]),
-        inputs=kwargs["inputs"],
+        inputs=kwargs["inputs"] + [n],
         outputs=kwargs["outputs"],
         device=kwargs.get("device"),
       )
     if key == "_tile_cholesky_solve__locals__cholesky_solve" and _enabled():
       adr = kwargs["inputs"][2]
+      # L (inputs[0]) is unpadded: its row dim IS the single-tile size
+      n = _adr_tile_size(adr, kwargs["inputs"][0].shape[1])
       nworld = nworld_from(kwargs)
       return wp.launch(
         _cholesky_solve_tiles_flat,
         dim=(nworld, adr.shape[0]),
-        inputs=kwargs["inputs"],
+        inputs=kwargs["inputs"] + [n],
         outputs=kwargs["outputs"],
         device=kwargs.get("device"),
       )
@@ -163,10 +186,12 @@ def install() -> None:
         device=kwargs.get("device"),
       )
     if key == "_tile_cholesky_factorize_solve__locals__cholesky_factorize_solve" and _enabled():
+      adr = kwargs["inputs"][2]
+      n = _adr_tile_size(adr, kwargs["outputs"][0].shape[1])
       return wp.launch(
         _cholesky_factorize_solve_flat,
         dim=nworld_from(kwargs),
-        inputs=kwargs["inputs"],
+        inputs=kwargs["inputs"] + [n],
         outputs=kwargs["outputs"],
         device=kwargs.get("device"),
       )
@@ -305,21 +330,18 @@ def _cholesky_solve_tiles_flat(
   L_in: wp.array3d[float],
   y_in: wp.array2d[float],
   adr_in: wp.array[int],
+  n: int,
   x_out: wp.array2d[float],
 ):
   """Dense backsubstitution x = inv(L'L) y over the qM tile set.
 
-  One work-item per (world, tile); the tile size comes from the address gaps
-  so no static tiling is compiled in. Replaces smooth._tile_cholesky_solve,
+  One work-item per (world, tile); n (the tile size) is computed on the host
+  from the TileSet's address gaps. Replaces smooth._tile_cholesky_solve,
   which mujoco_warp's set-const path launches once per tile per world --
   260 launches per recompute at 4096 envs, ~93% of recompute time.
   """
   worldid, nodeid = wp.tid()
   off = adr_in[nodeid]
-  if nodeid + 1 < adr_in.shape[0]:
-    n = adr_in[nodeid + 1] - off
-  else:
-    n = L_in.shape[1] - off
 
   # forward substitution in-place on the output (y = L^-1 b)
   for i in range(n):
@@ -342,6 +364,7 @@ def _cholesky_solve_tiles_flat(
 def _cholesky_factorize_tiles_flat(
   qM_in: wp.array3d[float],
   adr_in: wp.array[int],
+  tile_n: int,
   L_out: wp.array3d[float],
 ):
   """Dense LLT factorization over the qM tile set, one work-item per tile.
@@ -359,10 +382,7 @@ def _cholesky_factorize_tiles_flat(
   """
   worldid, nodeid = wp.tid()
   off = adr_in[nodeid]
-  if nodeid + 1 < adr_in.shape[0]:
-    n = adr_in[nodeid + 1] - off
-  else:
-    n = qM_in.shape[1] - off
+  n = tile_n
 
   for i in range(n):
     for j in range(i + 1):
@@ -447,17 +467,12 @@ def _cholesky_factorize_solve_flat(
   M_in: wp.array3d[float],
   y_in: wp.array2d[float],
   adr_in: wp.array[int],
+  n: int,
   x_out: wp.array2d[float],
   L_out: wp.array3d[float],
 ):
   worldid, nodeid = wp.tid()
   off = adr_in[nodeid]
-  # tiles in one TileSet are equal-size; the gap to the next address (or the
-  # matrix end for the last tile) is this tile's size
-  if nodeid + 1 < adr_in.shape[0]:
-    n = adr_in[nodeid + 1] - off
-  else:
-    n = M_in.shape[1] - off
 
   for i in range(n):
     for j in range(i + 1):

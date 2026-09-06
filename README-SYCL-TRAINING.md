@@ -310,9 +310,14 @@ SYCL build). Off by default; `MJLAB_SYCL=1` wires everything through
 
 - **Non-BAM actuator tasks produce NaN observations on the sycl path**
   (verified: Mjlab-Cartpole-Balance, Mjlab-Velocity-Flat-Unitree-Go1; CPU
-  native runs of the same seeds are clean). The NaN appears in every obs
-  column from the first env.step, while qacc/qpos show no corruption at any
-  launch boundary we can observe — the corrupting write happens inside the
-  un-intercepted launch_tiled path (mjlab's built-in actuator/sensor kernel
-  family). Microduck-family tasks (BAM actuators) are unaffected. Status:
-  under investigation; use the cpu device for non-microduck tasks meanwhile.
+  native runs of the same seeds are clean). Root cause identified: mjlab
+  builds some model/data arrays on the host (torch CPU tensors) while others
+  land on the sycl device — a host/device mix that the CUDA path tolerates
+  via implicit host-to-device conversion in pack_arg, but the SYCL path
+  rejects (raises) or mishandles. Bare mujoco_warp on the exact mjlab
+  post-reset state reproduces the NaN with no mjlab patches loaded, so this
+  is a warp-sycl backend gap, not an mjlab bug. Fix direction: implement
+  implicit host-array conversion in the SYCL pack_arg path (input params
+  auto-copied to device, matching CUDA semantics). Microduck-family tasks
+  (BAM actuators, all device-resident arrays) are unaffected. Status: open;
+  use the cpu device for non-microduck tasks meanwhile.
