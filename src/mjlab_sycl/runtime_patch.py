@@ -20,7 +20,7 @@ import os
 
 import warp as wp
 
-from warp_sycl import flat_kernels
+from mjlab_sycl import flat_kernels
 
 
 def patch_simulation_for_sycl() -> None:

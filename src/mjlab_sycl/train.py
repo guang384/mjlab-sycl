@@ -50,7 +50,7 @@ if _sycl_pip and os.path.isdir(_sycl_pip):
 import torch
 import warp as wp
 
-from warp_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
+from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
 
 
 def main() -> None:

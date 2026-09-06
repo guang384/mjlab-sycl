@@ -1,7 +1,7 @@
 """One-time backend installation: overlay the SYCL backend onto this
 environment's warp package and verify the device comes up.
 
-Usage:  python -m warp_sycl install
+Usage:  python -m mjlab_sycl install
 """
 
 import os
@@ -31,7 +31,7 @@ def main() -> int:
       for f in files:
         shutil.copy2(os.path.join(root, f), os.path.join(dst_dir, f))
         n += 1
-  print(f"[warp-sycl] overlaid {n} backend files onto {warp_dir}")
+  print(f"[mjlab-sycl] overlaid {n} backend files onto {warp_dir}")
 
   # 2) place the prebuilt warpsycl.dll in warp's kernel cache
   ver = warp.__version__
@@ -39,7 +39,7 @@ def main() -> int:
   os.makedirs(cache, exist_ok=True)
   dll = os.path.join(backend, "warpsycl.dll")
   shutil.copy2(dll, os.path.join(cache, "warpsycl.dll"))
-  print(f"[warp-sycl] warpsycl.dll -> {cache}")
+  print(f"[mjlab-sycl] warpsycl.dll -> {cache}")
 
   # 3) verify
   import warp as wp  # re-import picks up the overlaid modules
@@ -47,21 +47,21 @@ def main() -> int:
   wp.init()
   try:
     dev = wp.get_device("sycl")
-    print(f"[warp-sycl] sycl device OK: {dev.name}")
+    print(f"[mjlab-sycl] sycl device OK: {dev.name}")
   except Exception as e:
-    print(f"[warp-sycl] WARN: sycl device not available ({e!r})", file=sys.stderr)
+    print(f"[mjlab-sycl] WARN: sycl device not available ({e!r})", file=sys.stderr)
     return 1
 
   try:
     import torch
 
     ok = torch.xpu.is_available()
-    print(f"[warp-sycl] torch {torch.__version__} | xpu available: {ok}")
+    print(f"[mjlab-sycl] torch {torch.__version__} | xpu available: {ok}")
     if not ok:
       print('  install it per-machine: pip install "torch==2.9.1+xpu" '
             '--index-url https://download.pytorch.org/whl/xpu')
   except ImportError:
-    print("[warp-sycl] torch not installed (PPO needs torch.xpu)")
+    print("[mjlab-sycl] torch not installed (PPO needs torch.xpu)")
   return 0
 
 
