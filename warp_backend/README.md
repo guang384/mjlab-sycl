@@ -6,6 +6,11 @@ It is **vendored from our fork of NVIDIA/warp** (branch `sycl`) so that this
 package is self-contained; the fork remains the development home for the
 backend itself.
 
+The package ships its own copy of these files at `src/mjlab_sycl/backend/`
+(that is what goes into the wheel and what the installer actually overlays);
+this directory stays the authoritative source — after editing here, copy the
+changed files over so the two trees stay identical.
+
 ## Contents
 
 - `files/_src/` — the 5 patched Python modules (`build.py`, `codegen.py`,
