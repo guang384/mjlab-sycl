@@ -9,7 +9,7 @@ parity):
     sim boundaries, skips viewer-only sites
   - flat kernels: barrier-free rewrites of mujoco_warp's hot tiled kernels
   - train/bench/train_viewer: entries that bypass mjlab's CUDA-only
-    select_gpus
+    select_gpus; test_e2e/test_mujoco: verification gates (mjlab-sycl-test)
 
 The bundled entries wire the patch themselves; importing this package does
 nothing.

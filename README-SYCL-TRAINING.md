@@ -15,6 +15,7 @@ Developed and battle-tested against microduck_rl's 14-servo biped at 4096 envs.
 | `runtime_patch` | Routes mjlab/mujoco_warp physics onto the `sycl` device: warp arrays live in USM shared memory (`wp.to_torch` wraps them zero-copy), torch tensors stay on CPU, and the async kernel queue is drained at every sim call boundary. |
 | `flat_kernels` | Barrier-free rewrites of mujoco_warp's hottest tiled kernels (JTDAJ, contact_jacobian, both Choleskys, factorize), intercepted at `wp.launch_tiled`. Warp's tiled kernels are one work-item-per-world — dead slow on an iGPU. |
 | `train` / `bench` / `train_viewer` | Entry points that bypass mjlab's CUDA-only `select_gpus` (it indexes torch's empty CUDA list on Intel-only machines and dies before iteration 0). |
+| `test_e2e` / `test_mujoco` | Verification gates: backend mechanics bit-exact vs the cpu device, and real mujoco_warp physics agreeing with the cpu device (see Verification gates below). One command: `mjlab-sycl-test`. |
 
 No third-party package files are modified on disk except the documented warp
 overlay — a fresh `uv sync` remains ground truth (and wipes the overlay; see
@@ -79,6 +80,27 @@ Task IDs come from mjlab's registry — anything installed in the venv works
 themselves; for a custom entry point, call `patch_simulation_for_sycl()` right
 after `wp.init()`.
 
+## Verification gates
+
+    mjlab-sycl-test                     # both gates, in order
+    python -m mjlab_sycl.test_e2e       # backend mechanics alone
+    python -m mjlab_sycl.test_mujoco    # mujoco_warp physics vs cpu alone
+
+`test_e2e` exercises device registration, USM-backed arrays with host
+readback, kernel compilation through the icx chain, module-cache relaunch,
+vec3/struct types, atomics under million-way races, 2-D launches, and the
+tape adjoint path — bit-exact (or atol-tight) against the cpu device.
+
+`test_mujoco` runs real mujoco_warp physics steps (the pendula model shipped
+with mujoco_warp) on the sycl device: no NaNs, run-to-run determinism, and
+agreement with the cpu device within 1e-5 (typically ~2-3e-6).
+
+Run the gates after `install` on a new machine, after any backend change or
+`warpsycl.dll` rebuild (see warp_backend/REBUILD.md), and before any long
+training run. Some backend misconfigurations fail silently — e.g. an SLM
+arena overflow corrupts physics with no error — so the cpu-agreement check
+is the only reliable detector.
+
 ## Environment variables
 
 | var | default | role |
@@ -119,14 +141,15 @@ after `wp.init()`.
 5. **Steady-state step probes do not see the reset path.** Batched episode
    resets run `recompute_constants` every step (84% of rollout time in one
    profile). Profile inside `runner.learn`, never on synthetic steps.
-6. **Before any long run:** a 64-env smoke test plus a numerics check against
-   the cpu device on the same model/actions.
+6. **Before any long run:** `mjlab-sycl-test` (the gates) plus a 64-env
+   training smoke test.
 
 ## Repo layout
 
     src/mjlab_sycl/    runtime_patch, flat_kernels, train/bench/train_viewer,
-                       install, backend/ (the vendored warp files + warpsycl.dll
-                       that ship in the wheel)
+                       the verification gates (test_e2e/test_mujoco/test +
+                       _bootstrap), install, backend/ (the vendored warp files
+                       + warpsycl.dll that ship in the wheel)
     warp_backend/      provenance + rebuild docs for the vendored backend
                        (README.md, REBUILD.md); the backend files themselves
                        live only in src/mjlab_sycl/backend/

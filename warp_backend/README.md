@@ -29,9 +29,9 @@ package. This directory holds only the documentation.
 ## When to rebuild
 
 Only when changing the backend itself (new kernel support, watchdog tuning, a
-warp upstream upgrade). Then: rebuild `warpsycl.dll` per `REBUILD.md`, re-run
-the e2e + mujoco_warp agreement gates against the cpu device, and commit the
-refreshed sources together.
+warp upstream upgrade). Then: rebuild `warpsycl.dll` per `REBUILD.md`, re-run the
+verification gates (`mjlab-sycl-test`), and commit the refreshed
+sources together.
 
 ## Upstream
 
