@@ -3,52 +3,26 @@
 
 mjlab's `train` calls select_gpus() which indexes torch's CUDA device list --
 on a machine with only an Intel iGPU that list is empty and training dies
-before iteration 0. This script builds the same mjlab env + rsl_rl runner as
-bench_sycl_train but keeps every training feature: checkpoints, logging
-(tensorboard; wandb stays off unless --wandb), and full-length runs.
+before iteration 0. This entry builds the same mjlab env + rsl_rl runner as
+mjlab's own trainer while keeping every training feature: checkpoints,
+tensorboard logging, and full-length runs.
 
 Usage:
-    python scripts/train_sycl.py Mjlab-Velocity-Flat-MicroDuck \
+    mjlab-sycl-train Mjlab-Velocity-Flat-MicroDuck \
         --num-envs 1024 --max-iterations 1000 --save-interval 200
 """
 
 import argparse
 import dataclasses
-import os
-import sys
 from pathlib import Path
 
-# torch's XPU wheel bundles a SYCL runtime that may differ from the oneAPI
-# version warpsycl.dll was built against -- both ship a DLL named sycl8.dll,
-# and the process must resolve the warp-compatible (newer) one first or
-# warp's device registration fails (WinError 127). Also, torch itself needs
-# its pip-provided runtime dir on PATH to import at all. Prepend, in order:
-#   1. oneAPI's compiler bin (WARP_SYCL_ONEAPI_BIN or the default install)
-#   2. the pip SYCL runtime dir, auto-detected from site-packages
-#      (dpcpp-cpp-rt's Library/bin layout) or via WARP_SYCL_PIP_BIN
-_onapi = os.environ.get(
-    "WARP_SYCL_ONEAPI_BIN",
-    "C:/Program Files (x86)/Intel/oneAPI/compiler/2025.3/bin",
-)
-_sycl_pip = os.environ.get("WARP_SYCL_PIP_BIN", "")
-if not _sycl_pip:
-    import glob as _glob
-    for _site in [p for p in sys.path if p.endswith("site-packages")]:
-        _hits = sorted(_glob.glob(os.path.join(_site, "Library", "bin")))
-        if _hits:
-            _sycl_pip = _hits[0]
-            break
-for _p in (_onapi,):
-    if _p and os.path.isdir(_p):
-        # prepend: warp's warpsycl.dll must resolve the 2025.3 sycl8.dll
-        os.environ["PATH"] = _p + os.pathsep + os.environ["PATH"]
-if _sycl_pip and os.path.isdir(_sycl_pip):
-    # append: torch's other DLL dependencies (libuv etc.) as a fallback only,
-    # so its older sycl8.dll can never shadow the one above
-    os.environ["PATH"] = os.environ["PATH"] + os.pathsep + _sycl_pip
+# sycl8.dll PATH ordering -- must run before torch/warp come up (see _bootstrap)
+from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
 
-import torch
-import warp as wp
+prepare_sycl_runtime_path()
+
+import torch  # noqa: E402
+import warp as wp  # noqa: E402
 
 from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
 

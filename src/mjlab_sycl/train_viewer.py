@@ -11,32 +11,17 @@ Usage:
 
 import argparse
 import dataclasses
-import os
-import sys
 from pathlib import Path
 
-_onapi = os.environ.get(
-    "WARP_SYCL_ONEAPI_BIN",
-    "C:/Program Files (x86)/Intel/oneAPI/compiler/2025.3/bin",
-)
-_sycl_pip = os.environ.get("WARP_SYCL_PIP_BIN", "")
-if not _sycl_pip:
-    import glob
-    for site in [p for p in sys.path if p.endswith("site-packages")]:
-        hits = sorted(glob.glob(os.path.join(site, "Library", "bin")))
-        if hits:
-            _sycl_pip = hits[0]
-            break
-for _p in (_onapi,):
-    if _p and os.path.isdir(_p):
-        os.environ["PATH"] = _p + os.pathsep + os.environ["PATH"]
-if _sycl_pip and os.path.isdir(_sycl_pip):
-    os.environ["PATH"] = os.environ["PATH"] + os.pathsep + _sycl_pip
+# sycl8.dll PATH ordering -- must run before torch/warp come up (see _bootstrap)
+from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
 
-import torch
-import warp as wp
+prepare_sycl_runtime_path()
 
-from mjlab_sycl.runtime_patch import patch_simulation_for_sycl
+import torch  # noqa: E402
+import warp as wp  # noqa: E402
+
+from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
 
 
 def main() -> None:

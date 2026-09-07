@@ -23,8 +23,13 @@ import os
 import time
 from pathlib import Path
 
-import torch
-import warp as wp
+# sycl8.dll PATH ordering -- must run before torch/warp come up (see _bootstrap)
+from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
+
+prepare_sycl_runtime_path()
+
+import torch  # noqa: E402
+import warp as wp  # noqa: E402
 
 from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
 
