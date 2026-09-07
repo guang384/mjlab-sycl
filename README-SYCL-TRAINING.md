@@ -1,319 +1,150 @@
-# AGENTS.md
+# mjlab-sycl — Intel GPU (SYCL) training for mjlab
 
-RL training environments for Microduck — a ~800 g, ~25 cm tall bipedal
-robot with 14 Dynamixel XL330 servos — built on [mjlab](https://github.com/mujocolab/mjlab)
-(MuJoCo Warp) with PPO (rsl_rl). Policies are trained here at 50 Hz, exported to
-ONNX, and deployed by the runtime in the `pollen-robotics/microduck` repo on
-the real robot. Sim2real transfer
-is the whole point: every convention below exists because breaking it produced a
-policy that worked in the viewer and failed on hardware.
+Run mjlab PPO training with mujoco_warp physics on an Intel Arc iGPU. The
+package installs into an existing mjlab project's venv: the project's code,
+config, and lock file stay untouched, and tasks resolve through mjlab's plugin
+registry — everything from an installed task package (e.g.
+[microduck_rl](https://github.com/pollen-robotics/microduck_rl)) trains as-is.
+Developed and battle-tested against microduck_rl's 14-servo biped at 4096 envs.
 
-## Commands
+## How it works
 
-```bash
-uv run list-envs                                    # live task registry
-uv run train <TASK_ID> --env.scene.num-envs 4096    # train (add --hf-jobs for Hugging Face Jobs)
-uv run train <TASK_ID> --env.scene.num-envs 64 --agent.max_iterations 5   # SMOKE TEST — always run first
-uv run play <TASK_ID> --wandb-run-path <entity/project/run_id>
-uv run scripts/export.py <TASK_ID> --wandb-run-path <...>   # → ONNX (bakes obs normalizer — mandatory path)
-uv run publish --task <TASK_ID> --wandb-run-path <...> --checkpoint N --repo <user>/microduck-<name> --kind episodic --duration-s 4.0
-                                                    # → HF Hub repo (policy.onnx + schema-2 manifest.json + README) the daemon loads via `robotctl policy add`
-uv run scripts/infer_policy.py --walking out.onnx   # CPU MuJoCo deployment rehearsal
-uv run scripts/train_sycl.py <TASK_ID> --num-envs 4096 --max-iterations 1000
-                                                    # Intel GPU training (requires MJLAB_SYCL=1, see below)
-uv run --with pytest pytest tests/
-```
+| layer | role |
+|---|---|
+| `backend/` | Vendored warp 1.12.0 SYCL backend: 7 patched warp files + 2 new SYCL runtime sources + a prebuilt `warpsycl.dll`. `python -m mjlab_sycl install` overlays it onto the environment's warp package — strictly additive, CUDA and CPU paths untouched. |
+| `runtime_patch` | Routes mjlab/mujoco_warp physics onto the `sycl` device: warp arrays live in USM shared memory (`wp.to_torch` wraps them zero-copy), torch tensors stay on CPU, and the async kernel queue is drained at every sim call boundary. |
+| `flat_kernels` | Barrier-free rewrites of mujoco_warp's hottest tiled kernels (JTDAJ, contact_jacobian, both Choleskys, factorize), intercepted at `wp.launch_tiled`. Warp's tiled kernels are one work-item-per-world — dead slow on an iGPU. |
+| `train` / `bench` / `train_viewer` | Entry points that bypass mjlab's CUDA-only `select_gpus` (it indexes torch's empty CUDA list on Intel-only machines and dies before iteration 0). |
 
-A 5-iteration smoke test at 64 envs catches ~95% of config errors for cents.
-Never launch a long run without one.
+No third-party package files are modified on disk except the documented warp
+overlay — a fresh `uv sync` remains ground truth (and wipes the overlay; see
+footguns).
 
-## Repo map
+## Requirements
 
-- `src/mjlab_microduck/tasks/mdp.py` — ALL custom MDP functions (rewards, events,
-  observations, commands, curricula). Add new functions here, grouped by task.
-- `src/mjlab_microduck/tasks/microduck_*_env_cfg.py` — one cfg module per task
-  family. `microduck_velocity_env_cfg.py` is the main walking recipe AND the
-  shared base (robot, DR, obs, commands) other envs build on or mirror.
-- `src/mjlab_microduck/tasks/__init__.py` — task registration (base + `-Backlash-` variants).
-- `src/mjlab_microduck/tasks/backlash.py` — wraps any env cfg into its backlash twin.
-- `src/mjlab_microduck/robot/microduck_constants.py` — robot cfgs, HOME frame, BAM actuator cfg.
-- `src/mjlab_microduck/robot/microduck/` — MJCF exports from Onshape
-  (onshape-to-robot, one `config_mjcf_*.json` per model) + scenes + `add_backlash.py`.
-- `src/mjlab_microduck/actuator/friction_dr_bam.py` — BAM actuator + friction DR + backlash encoder.
-- `src/mjlab_microduck/export.py` — the ONNX export (normalizer baked in); `scripts/export.py` wraps it.
-- `src/mjlab_microduck/publish/` — `uv run publish`: schema-2 manifest builder + ONNX shape/smoke
-  gate + Hub upload. Contract = `docs/policy-manifest.md` in the `microduck` repo; only
-  constant-command episodic/perpetual policies are publishable (phase/posture-flag are the set's).
-- `scripts/` — export wrapper, infer, sim2real comparison, wandb helpers.
-- `tests/` — cfg-invariant and mdp-function regression tests (CPU, no GPU needed).
-- `src/mjlab_microduck/sycl_patch.py`, `sycl_flat.py` — Intel-GPU (SYCL) training
-  support, injected at runtime; see "Intel GPU (SYCL) training" below.
+- Windows, Python 3.12
+- Intel Arc iGPU (developed on Arc 130T / Lunar Lake)
+- mjlab 1.3.0, mujoco-warp, warp-lang 1.12.0, torch 2.9.1 (pinned in the package)
+- Intel oneAPI 2025.x compiler runtime; default location
+  `C:/Program Files (x86)/Intel/oneAPI/compiler/2025.3/bin` — the major version
+  must match the one `warpsycl.dll` was built with
 
-## Invariants — do not break these
+## Install
 
-- **Obs layout is 61D (actor) and shared across the whole policy family** so
-  policies are hot-swappable in the runtime: 48 base proprioception +
-  13D command block `[twist(3), head_pose(4), body_pose(6)]`, in that order.
-  An env that doesn't use a command slot ZERO-PADS it (keep the obs term,
-  sample tiny ranges) — never delete a slot.
-- **Joint layout** (14 servos, ctrl idx = joint idx on walk/groundcontact
-  models): 0–4 left leg (hip_yaw, hip_roll, hip_pitch, knee, ankle), 5–8
-  neck/head (neck_pitch, head_pitch, head_yaw, head_roll), 9–13 right leg.
-  On roller/backlash models, passive joints INTERLEAVE — never hardcode joint
-  indices in mdp functions; use the `_servo_joint_ids` / `_servo_joint_pos`
-  helpers in mdp.py (identity on plain models, correct everywhere else).
-- **Unactuated joints are all named `passive_*`** (wheels, backlash hinges).
-  Every actuator/obs/reward selector uses `^(?!passive_).*` — keep the prefix
-  convention when adding joints, and new `passive_` regexes must not
-  accidentally match backlash joints (`^passive_.*wheel`, not `^passive_.*`).
-- **Actuators are BAM** (voltage-controlled XL330 model, friction computed by
-  the actuator). Two consequences: any STANDALONE env cfg must register the
-  `expand_bam_friction_fields` startup event, and joint-friction DR must scale
-  the actuator's `friction_scale` — `dof_frictionloss` is zeroed under BAM, so
-  randomizing it is a silent no-op.
-- **Obs normalization is ON** → the normalizer must be baked into the ONNX.
-  `scripts/export.py` does this; in-sim play hides the bug (it applies the
-  normalizer anyway), so never hand-convert a checkpoint.
-- **Policies are UNFILTERED** (no action low-pass in training). Don't add EMA
-  filtering without a matched runtime flag and a transfer test — trained-with /
-  deployed-without (either direction) breaks transfer.
-- **Domain randomization must not accumulate across resets.** mjlab 1.3.0's
-  `dr.*` ops with `operation="add"/"scale"` are natively non-accumulating (they
-  re-read compile-time defaults); custom DR functions must restore-then-apply.
-  An accumulating CoM randomizer once degraded every long run for months.
-- If an obs is remapped to a sensor view (backlash encoder, bias), any tracking
-  REWARD on the same quantity must measure the same view — otherwise the policy
-  is punished for correcting what it sees.
-- `-Backlash-` task variants must mirror their base task's robot model
-  (walk / groundcontact / rollers) so backlash A/B comparisons are unconfounded.
+Into your mjlab project's venv:
 
-## Building a new env — the workflow
+    cd <your mjlab project>          # e.g. microduck_rl
+    uv sync                          # project stays untouched
+    uv pip install git+https://github.com/guang384/mjlab-sycl
+    python -m mjlab_sycl install
 
-1. **Pick the closest template** and build on it, don't start from scratch:
-   locomotion → the velocity recipe; episodic trick ending in a pose →
-   standup; commanded two-state → sitstand; dynamic maneuver → roulade
-   (read its cfg docstring — it encodes a 5-run lesson arc). Building on
-   `make_microduck_velocity*_env_cfg` keeps DR / obs / noise / delays in sync
-   for free; if you build standalone from mjlab's base template, you must port
-   the whole DR + obs-noise + NaN-guard stack yourself (grep for what velocity
-   wires: `_safe` critic obs terms, `nan_state` termination with sensor_names,
-   `expand_bam_friction_fields`, encoder bias, IMU misalignment).
-2. **Verify physics assumptions in sim BEFORE training** — this is the single
-   biggest time-saver:
-   - A target/rest pose must be a stable equilibrium: hold its ctrl for 3 s
-     from noisy inits and check TILT, not just height (a settle test that only
-     records z reports fallen states as "resting fine").
-   - Measure target heights off the actual robot in sim (e.g. trunk z under a
-     standing policy), never carry them across model revisions. A 5 mm-wrong
-     STAND_Z once turned the goal into an impossible target for days.
-3. **Config conventions**: `ENABLE_*` toggles + tuned constants at the top of
-   the cfg file; factory `make_..._env_cfg(play: bool, rough: bool)`; register
-   in `tasks/__init__.py` (+ the `_BACKLASH_TASKS` table if applicable); own
-   `RslRl...RunnerCfg` with a distinct `experiment_name`. Symmetry mirror-loss
-   is available (61D table in `symmetry.py`) — OFF by default, never for
-   asymmetric tasks.
-4. **Write cfg tests** (see `tests/test_*_cfg.py`): joint indices resolve on
-   the actual model, reward weights have the intended sign, gates open/closed
-   where expected. These run on CPU and lock in the invariants.
-5. **Smoke test** (64 envs, 5 iters): builds, steps NaN-free, obs is 61D,
-   every reward term computes, ONNX exports.
-6. Train, watch the log (below), and expect 2–5 iterations of reward-hacking
-   whack-a-mole — that's normal, the lessons below shortcut most of it.
+`install` overlays the backend onto the venv's warp package, drops
+`warpsycl.dll` into warp's kernel cache, verifies the `sycl` device comes up,
+and reports torch XPU availability.
 
-## Reward design — rules that were each learned the hard way
+torch XPU is a per-machine step (deliberately NOT routed in pyproject — an
+XPU-index dependency would change the wheel for every CPU/CUDA user):
 
-- **Sign convention (bit four envs):** mdp.py has two penalty styles. mjlab-base
-  cost functions return ≥ 0 → negative weight. Self-negating microduck functions
-  (`*_penalty`, `*_l1` returning ≤ 0) → POSITIVE weight. A negative weight on a
-  self-negating penalty double-negates into a reward for the violation, and the
-  policy will farm it (butt-hopping, crash-sits). **The infallible check: on
-  every run, every `Episode_Reward/<penalty>` in wandb must be ≤ 0.**
-- **RL optimizes the letter of the reward.** Every under-specified degree of
-  freedom will be exploited (ballistic whip instead of a roll, shoulder-roll
-  instead of sagittal, head-tripod instead of standing). Encode what counts as
-  the maneuver in hard state-based gates (support contact, orientation-axis
-  checks, latches), not in small penalty nudges.
-- **No jackpots:** any "reach X" reward must be rate-limited or slewed.
-  Arriving early at a goal state that then pays per-step is a jackpot that
-  buys arbitrary violence. For commanded transitions, track a slewed internal
-  target (constant-rate blend) — being ahead of the ramp pays zero, so slow IS
-  the argmax. Speed-cap penalties alone integrate to a bounded cost and lose.
-- **Never gate a positive reward on being in a bad state** (fallen, low) — the
-  policy parks in the cheapest qualifying pose and farms it. Use
-  potential-based shaping instead (pay Δprogress, e.g. Δcos(tilt): rising pays,
-  holding pays zero, unfarmable). For rest tasks, audit each positive term
-  against every stable flop (on back / face / side): if flopping keeps most of
-  the stack, the policy will flop.
-- **Episodic pose-landing tasks:** single fixed target from t=0 (Gaussian + L1
-  on joints and height, generous std) + |a_z| impact penalty + two-layer
-  upright — NOT keyframe/waypoint trajectories (the policy camps at
-  waypoints). The path is what RL is supposed to discover.
-- **Regularizers come in two kinds.** Motion-blockers (body_ang_vel,
-  angular_momentum, pose std) penalize what a dynamic motion physically
-  requires — keep them LOW for dynamic tasks. Smoothness (action_rate,
-  joint_torque_rate) damps jitter without blocking slow big motions — safe to
-  weight, but introduce it AFTER skill discovery (curriculum from ~0): any
-  attempt-tax active while a hard skill is being explored makes "do nothing"
-  win. Slow careful tasks (reaching) want heavier smoothness than walking.
-- **Compare reward mass, not weights, when copying regularizers between envs.**
-  PPO sees relative advantage: the same action_rate weight is 4× weaker under a
-  4×-larger positive task stack.
-- **Tracking Gaussian std:** ≈ the error you still care about, not the max
-  error — too loose has no gradient at small errors. BUT before tightening,
-  ask whether the error is escapable by the policy or inherent to the behavior
-  you want (a 38%-of-body-mass head MUST oscillate while walking; a tight
-  instantaneous head-tracking std taxed walking so hard the policy stood
-  still). Price only the escapable part — e.g. L1 on a 1 s EMA charges DC bias
-  and lets oscillation cancel.
-- **Multiplicative composites beat additive sums at goal states:** when an
-  additive stack has a compromise basin (80% of every term via a lean), a
-  product of Gaussians collapses on any single deficient factor — but pick stds
-  wide enough that the CURRENT policy scores visibly, or the gradient is
-  invisible and nothing changes.
-- **Joints parking on hard limits:** fix with a qpos-side limit-proximity
-  penalty on the offending joints; the stock `dof_pos_limits` only fires in the
-  last ~7.5% of range, and command-side penalties don't work (wide ctrlrange is
-  intentional — low-kp servos need overshoot).
+    .venv/Scripts/python.exe -m pip install "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu
 
-## Commands, observations, dead weights
+pip gotchas seen on real machines: a global `pip config` `target=` merges
+installs into a shared directory (`PIP_TARGET= pip install ...` to escape),
+and disabled Windows long paths (`LongPathsEnabled=0`) silently truncate the
+torch install into an unusable state.
 
-- **A command input that is never non-zero has dead weights forever.** Every
-  command slot keeps a small non-zero sampling range from step 0 (even at
-  reward weight 0) so its input neurons stay alive for later curricula.
-- **Zero-command behavior must be explicitly trained** (`zero_command_prob`-style
-  exact-zero sampling): uniform sampling essentially never produces the all-zero
-  command, which is exactly the deployment idle state.
-- Rare-but-important command regions need explicit buckets — e.g. turn-in-place
-  (`rel_turn_in_place_envs`): independent uniform sampling made spinning ~2% of
-  experience and it never trained.
+**Every `uv sync` — and every `uv run`, which auto-syncs — wipes the warp
+overlay.** Re-run the two install commands afterwards, or the sycl device
+silently disappears. `uv sync --inexact` skips the uninstall.
 
-## Curricula
+## Usage
 
-- Steps are env steps: `iteration × 24` (`NUM_STEPS_PER_ENV = 24`).
-- Use the proven split: `microduck_mdp.reward_weight` for weight schedules, a
-  dedicated params-curriculum for command/event ranges. `mdp.reward_weight` is
-  a step function, not an interpolation — discretize ramps into stages.
-- Mutate term cfgs via the managers (`env.event_manager.get_term_cfg(...)`),
-  never `env.cfg.events[...]` — managers deepcopy their cfg at init, so writes
-  to `env.cfg` are silent no-ops (this also bites eval scripts that force
-  spawn states).
-- **Phase-align every stage with what the policy has actually learned**: don't
-  harden spawn mixes before the current slice consolidates; don't introduce
-  taxes before the skill exists. When a wandb metric steps DOWN exactly at
-  curriculum stage boundaries, the pacing is wrong — stretch stages or move
-  the introduction later, never earlier.
-- Reverse-curriculum spawns (starting episodes partway through the maneuver,
-  including nearly-done) are the reliable fix for "learns the start, never the
-  last mile" — the frontier otherwise gets no on-policy data.
+    mjlab-sycl-train <TASK_ID> --num-envs 4096 --max-iterations 1000
+        [--save-interval N] [--run-name NAME] [--checkpoint path]
+        [--seed N] [--ppo-device xpu|cpu]
 
-## Training ops & reading a run
+Full training: checkpoints, tensorboard logs under `logs/<TASK_ID>-sycl/`,
+resume via `--checkpoint`. PPO runs on `torch.xpu` when available (physics
+stays on the sycl device, env managers on CPU); `--ppo-device cpu` to compare.
+Run the console script directly (`.venv\Scripts\mjlab-sycl-train ...` or an
+activated shell) — `uv run mjlab-sycl-train` would auto-sync first and wipe
+the overlay.
 
-- wandb project `mjlab_microduck`; logs in `logs/<experiment_name>/`; resume
-  with `--agent.load-checkpoint model_XXXX.pt --agent.resume True`.
-- Watch per-iteration: mean reward rising AND episode length behaving as the
-  task demands; every penalty term ≤ 0; the MAIN task term actually growing
-  (total reward can rise purely on regularizers while the trick never happens).
-  `Episode_Reward/<term>` logs the WEIGHTED value — a term at weight 0 reads 0
-  regardless of behavior, so interpret against the weight schedule.
-- Budgets: simple episodic tricks ≈ 1000 iters at 4096 envs; gaits and
-  curriculum-heavy recovery need 4000–6000.
-- **Measure before theorizing.** When a run "fails", run a headless eval of the
-  actual checkpoint (per-spawn-type batteries, end-state clusters, angular-rate
-  profiles) before changing rewards: past "failures" turned out to be early
-  checkpoints, a success criterion splitting one behavior cluster in half, and
-  a pay cap fighting measured physics. Sim metrics can pass while the video
-  fails the human eye — watch the video AND check which geom/axis touches.
-- Report what rollouts actually show ("rolls but face-plants 1 in 3"), not
-  "it works!". The user decides when it's good enough.
+Benchmark and live viewer:
 
-## Intel GPU (SYCL) training — opt-in path (MJLAB_SYCL=1)
+    mjlab-sycl-bench --device sycl --task Mjlab-Velocity-Flat-MicroDuck --num-envs 4096 --iters 6
+    python -m mjlab_sycl.train_viewer <TASK_ID> --num-envs 1024
 
-Lets an Intel Arc iGPU run training locally: warp physics on the GPU via a
-SYCL backend (fork: `github.com/<owner>/warp`, branch `sycl`; overlay it onto
-the installed warp with its `tools/overlay.py`), PPO on `torch.xpu` (managers stay on
-CPU). torch is NOT routed to the XPU index in pyproject (that would change
-every Windows teammate's wheel) — install it per-machine instead:
-`.venv/Scripts/python.exe -m pip install "torch==2.9.1+xpu"
---index-url https://download.pytorch.org/whl/xpu`. If pip silently
-  produces a broken torch (import errors about missing files), Windows
-  long paths are disabled (LongPathsEnabled=0) — enable it (admin) or
-  install to a short-path target. pip may also honor a global `target=`
-  config that merges installs into a shared directory; check
-  `pip config list` first. 4096 envs: ~6800 env-steps/s (vs 258 on CPU, ~22x the first working
-SYCL build). Off by default; `MJLAB_SYCL=1` wires everything through
-`train_hook.maybe_install_sycl_patch()`.
+Task IDs come from mjlab's registry — anything installed in the venv works
+(in microduck_rl: `uv run list-envs`). The bundled entries wire the SYCL patch
+themselves; for a custom entry point, call `patch_simulation_for_sycl()` right
+after `wp.init()`.
 
-- **Use `scripts/train_sycl.py`, not `uv run train`**: mjlab's trainer dies in
-  `select_gpus()` before iteration 0 on machines without NVIDIA GPUs. The
-  script also self-contains the DLL PATH ordering — torch's XPU wheel and
-  oneAPI ship the SAME `sycl8.dll` at incompatible versions, and resolving the
-  old one first kills warp's device registration (WinError 127).
-- **Third-party package files are never modified.** Everything rides on
-  runtime monkey-patching (`sycl_patch.py`, `sycl_flat.py`), so a fresh
-  `uv sync` stays ground truth. The warp fork is the one exception — it is a
-  real source tree, applied to the venv via its overlay script.
-  **Every `uv sync` (or any `uv run`, which auto-syncs) wipes the overlay** —
-  re-apply it afterwards:
-  `python <warp-sycl>/tools/overlay.py .venv/Lib/site-packages/warp`, or the
-  sycl device silently disappears. Also note `uv.lock` must be regenerated
-  (`uv lock`) after the torch XPU source was added to `pyproject.toml`.
-- mujoco_warp's tiled kernels are "one work-item per world" — dead slow on an
-  iGPU. `sycl_flat.py` rewrites the hot ones (JTDAJ, contact_jac, both
-  choleskys, factorize) as barrier-free per-(world, sub-tile) scalar kernels
-  and intercepts them at `wp.launch_tiled`. Kill switch:
-  `MJLAB_SYCL_FLAT_JTDAJ=0`.
-- **NEVER add work-group barriers to tile kernels on this path.** One
-  divergent barrier deadlocks the iGPU engine and freezes the whole desktop
-  (TDR cannot recover while the host re-submits). A host-side watchdog
-  (`WARP_SYCL_SYNC_TIMEOUT_S`, in warpsycl.dll) aborts with the culprit
-  kernel name instead; wrap experiments in `scripts/run_guarded.py --timeout N`.
-- The tile SLM arena (`WP_MAX_SYCL_SHARED` in tile.h, default 16KB) fails
-  SILENTLY when a kernel exceeds it — physics corrupts without an error.
-  Bigger nv models: raise it via `WARP_SYCL_SHARED_KB` and verify against the
-  cpu device before training.
-- **Steady-state step probes do not see the reset path.** Batched episode
-  resets run `recompute_constants` every step (was 84% of rollout, 2.2s/step).
-  Profile performance INSIDE `runner.learn`, never on synthetic steps.
-- Verify numerics against the cpu device on the same model/actions
-  (`max|sycl-cpu|` over a 100-step falling-robot rollout; ~2e-06 is healthy),
-  and always 64-env smoke before long runs.
+## Environment variables
 
-## Sim2real footguns (cost real debugging weeks)
+| var | default | role |
+|---|---|---|
+| `WARP_SYCL_ONEAPI_BIN` | `C:/Program Files (x86)/Intel/oneAPI/compiler/2025.3/bin` | oneAPI bin dir prepended to PATH before torch/warp import |
+| `WARP_SYCL_PIP_BIN` | auto-detected from site-packages `Library/bin` | torch's pip SYCL runtime dir, appended so its older `sycl8.dll` can never shadow oneAPI's |
+| `MJLAB_SYCL_FLAT_JTDAJ` | `1` | kill switch for the flat JTDAJ kernel rewrite |
+| `WARP_SYCL_SHARED_KB` | 16 (`WP_MAX_SYCL_SHARED` in tile.h) | tile SLM arena size baked in at kernel-build time |
+| `WARP_SYCL_SYNC_TIMEOUT_S` | 180 (0 disables) | in-process GPU watchdog; a hung kernel aborts and names the culprit |
+| `MJLAB_PPO_DEVICE` | `cpu` | torch device used by `bench` |
 
-- A fresh `uv sync` is the ground truth (HF Jobs run one): anything that only
-  works via manually-installed local packages will die remotely. Keep
-  `pyproject.toml` honest.
-- **Wheels are per-architecture.** On linux-`aarch64` (DGX Spark / GB10) PyPI's
-  torch wheel is CPU-ONLY (`2.9.1+cpu`, `torch.version.cuda is None`), so
-  `torch.cuda.device_count() == 0` and mjlab's `select_gpus()` indexes an empty
-  list → `IndexError` before iteration 0. `[tool.uv.sources]` routes torch to
-  the cu129 index for `aarch64` only (cu129 matches the CUDA toolkit warp
-  bundles; x86_64/HF Jobs stay on PyPI). Two silent break points, both locked
-  by `tests/test_aarch64_cuda_torch.py`: torch must stay a DIRECT dependency
-  (uv applies `[tool.uv.sources]` to direct deps only — deleting the
-  redundant-looking `torch==` pin makes the routing a no-op), and the pin must
-  stay `==`, since the CUDA index carries newer builds than PyPI (a `>=`
-  silently dragged torch 2.9.1 → 2.13.0).
-- Physics-aligned limits: a 25 cm robot tumbles at 3.5–5.5 rad/s NATURALLY —
-  don't impose human-scale speed intuitions via caps; put anti-violence
-  pressure on impacts and thrash (|a_z|, action_rate, support gates), not on
-  rotation speed.
-- IMU DR is zero-centered — it trains tolerance to misalignment magnitude, and
-  CANNOT compensate a systematic mounting bias (that's a runtime calibration).
-- Real deployments hot-swap ONNX policies (walk / stand / trick) with a shared
-  obs contract — rehearse in `scripts/infer_policy.py` before touching the
-  robot, with the correct command-slot writes (a posture flag lives in the
-  twist vx slot; feeding all-zeros means "stand", which looks like "policy
-  ignores the button").
+## Performance (Arc 130T, microduck velocity, 4096 envs)
 
-## Known limitations (beyond the warp backend's own gaps)
+- ~5000–6800 env-steps/s end-to-end vs ~258 on the CPU device; ~22× the first
+  working SYCL build, before the flat kernels and async submission.
+- Numerics: `max |sycl − cpu|` over 100-step rollouts on the same
+  model/actions ≈ 2–3e-06.
+- Microbenchmark: 16M-float saxpy ~7.5× CPU bandwidth.
 
-- ~~Non-BAM actuator tasks produce NaN~~ **RESOLVED**: the NaN came from the
-  flat solver-Cholesky sizing itself to nv_pad (padded rows are zero ->
-  sqrt(0) diagonals -> 0/0 -> NaN into Mgrad -> search -> qacc). The tiled
-  original compiles TILE_SIZE = m.nv (the factory argument); the intercept
-  now records nv per kernel object via a factory wrap (shape inference is
-  unusable: ctx.h AND ctx.grad are both padded). Microduck survived because
-  nv=20 is already a multiple of 4. Verified fixed: Cartpole-Balance and
-  Unitree-Go1 train clean; microduck physics gate 2.4e-06 unchanged.
-- Multi-GPU / distributed training: not supported (single Intel device).
+## Footguns — each learned the hard way
+
+1. **Never add work-group barriers to tile kernels on this path.** One
+   divergent barrier deadlocks the iGPU engine and freezes the whole desktop
+   (Windows TDR cannot recover while the host keeps re-submitting). The
+   in-dll watchdog (`WARP_SYCL_SYNC_TIMEOUT_S`) aborts and names the culprit
+   kernel; wrap risky experiments in `scripts/run_guarded.py --timeout N --
+   <cmd>` as the outer backstop (kills the process tree, exit code 3).
+2. **The tile SLM arena fails silently when exceeded** — physics corrupts with
+   no error. For bigger `nv` models raise `WARP_SYCL_SHARED_KB` and verify
+   numerics against the cpu device before trusting the run.
+3. **`uv sync` / `uv run` wipes the warp overlay.** Re-install after (see
+   Install).
+4. **`sycl8.dll` collision.** torch's XPU wheel and oneAPI ship the same DLL
+   name at incompatible versions; if the wrong one resolves first, warp's
+   device registration dies with `WinError 127`. The train entry orders PATH
+   (oneAPI prepended, pip runtime appended) — in custom scripts, do the same
+   before importing torch/warp.
+5. **Steady-state step probes do not see the reset path.** Batched episode
+   resets run `recompute_constants` every step (84% of rollout time in one
+   profile). Profile inside `runner.learn`, never on synthetic steps.
+6. **Before any long run:** a 64-env smoke test plus a numerics check against
+   the cpu device on the same model/actions.
+
+## Repo layout
+
+    src/mjlab_sycl/    runtime_patch, flat_kernels, train/bench/train_viewer,
+                       install, backend/ (the vendored warp files + warpsycl.dll
+                       that ship in the wheel)
+    warp_backend/      provenance + rebuild docs for the vendored backend
+                       (README.md, REBUILD.md); its files/ tree is the
+                       authoritative copy — keep src/mjlab_sycl/backend/ in sync
+    scripts/           run_guarded.py (watchdog wrapper) + attribution probes
+
+## Known limitations
+
+- Windows + Intel iGPUs only (developed on Arc 130T). No Linux support, and
+  the official warp test suite has not been run — this is a training path,
+  not warp parity.
+- Tile dynamic shared memory is capped by SLM capacity (~60 KB on current
+  iGPUs).
+- Device-side printf is a no-op in the SYCL backend.
+
+## License
+
+Apache-2.0. The vendored backend derives from NVIDIA/warp 1.12.0: derived
+files carry MODIFIED notices, and warp's license plus its bundled third-party
+notices ship alongside them (`backend/LICENSE.md`,
+`backend/third_party_licenses/`). To rebuild `warpsycl.dll`, see
+`warp_backend/REBUILD.md`.
