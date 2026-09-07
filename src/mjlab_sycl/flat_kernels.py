@@ -95,6 +95,7 @@ def _enabled() -> bool:
 
 
 _ADR_SIZE_CACHE = {}  # id(adr array) -> tile size (TileSet: uniform across tiles)
+_SOLVER_CHOL_NV = {}  # id(kernel) -> nv (recorded by the factory wrap at install)
 
 
 def _adr_tile_size(adr, unpadded_dim):
@@ -117,6 +118,21 @@ def install() -> None:
   global _orig_launch_tiled
   if _orig_launch_tiled is not None:
     return
+
+  # wrap the solver-cholesky factory so each kernel object records its nv
+  # (the tile_size factory argument — the only unpadded dimension source)
+  try:
+    from mujoco_warp._src import solver as _solver
+    _orig_chol_factory = _solver.update_gradient_cholesky
+
+    def _chol_factory_recorder(nv):
+      k = _orig_chol_factory(nv)
+      _SOLVER_CHOL_NV[id(k)] = nv
+      return k
+
+    _solver.update_gradient_cholesky = _chol_factory_recorder
+  except Exception as e:
+    print(f"[mjlab-sycl] solver-cholesky factory probe failed ({e!r}); nv falls back to grad shape")
 
   # pre-instantiate the tiled contact-jac kernels for both cones so the
   # interception can tell them apart by object identity (their keys are equal;
@@ -176,7 +192,14 @@ def install() -> None:
       inputs = kwargs["inputs"]
       outputs = kwargs["outputs"]
       h = inputs[1]
-      n = h.shape[1]
+      # n MUST be the real nv: ctx.h AND ctx.grad are both allocated at
+      # nv_pad, whose padded rows are ZERO — factorizing them yields
+      # sqrt(0) diagonals, then 0/0 = NaN into Mgrad -> search -> qacc
+      # (the cartpole/go1 NaN; microduck survived only because nv=20 is a
+      # multiple of 4, so nv_pad == nv). The tiled original compiles
+      # TILE_SIZE = m.nv (the factory argument) — the only unpadded source.
+      # install() wraps the factory to record it per kernel object.
+      n = _SOLVER_CHOL_NV.get(id(kernel), inputs[0].shape[1])
       scratch = wp.empty_like(h)
       return wp.launch(
         _cholesky_solve_flat,

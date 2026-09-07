@@ -308,24 +308,12 @@ SYCL build). Off by default; `MJLAB_SYCL=1` wires everything through
 
 ## Known limitations (beyond the warp backend's own gaps)
 
-- **Non-BAM actuator tasks produce NaN observations on the sycl path**
-  (verified: Mjlab-Cartpole-Balance, Mjlab-Velocity-Flat-Unitree-Go1; CPU
-  native runs of the same seeds are clean). Root cause identified: mjlab
-  builds some model/data arrays on the host (torch CPU tensors) while others
-  land on the sycl device — a host/device mix that the CUDA path tolerates
-  via implicit host-to-device conversion in pack_arg, but the SYCL path
-  rejects (raises) or mishandles. Bare mujoco_warp on the exact mjlab
-  post-reset state reproduces the NaN with no mjlab patches loaded, so this
-  is a warp-sycl backend gap, not an mjlab bug. Fix direction: implement
-  implicit host-array conversion in the SYCL pack_arg path (input params
-  auto-copied to device, matching CUDA semantics). Microduck-family tasks
-  (BAM actuators, all device-resident arrays) are unaffected. Status: open;
-  use the cpu device for non-microduck tasks meanwhile.
-
-  Debugging state (scripts/probe_field_hunt.py): a dual-binding launch hook
-  (wp.launch AND warp._src.context.launch, covering the launch_tiled miss
-  path) scanning ALL Data fields at every launch boundary across the whole
-  learn() captured ZERO transitions — the NaN writer is not any wp.launch.
-  Remaining suspects: host-side USM writes through torch/numpy views, or an
-  mjlab-specific data path outside warp. The hook script is ready to extend
-  (add host-write tracing or wire into mjlab's managers).
+- ~~Non-BAM actuator tasks produce NaN~~ **RESOLVED**: the NaN came from the
+  flat solver-Cholesky sizing itself to nv_pad (padded rows are zero ->
+  sqrt(0) diagonals -> 0/0 -> NaN into Mgrad -> search -> qacc). The tiled
+  original compiles TILE_SIZE = m.nv (the factory argument); the intercept
+  now records nv per kernel object via a factory wrap (shape inference is
+  unusable: ctx.h AND ctx.grad are both padded). Microduck survived because
+  nv=20 is already a multiple of 4. Verified fixed: Cartpole-Balance and
+  Unitree-Go1 train clean; microduck physics gate 2.4e-06 unchanged.
+- Multi-GPU / distributed training: not supported (single Intel device).

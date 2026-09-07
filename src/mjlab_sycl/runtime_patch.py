@@ -132,3 +132,19 @@ def patch_simulation_for_sycl() -> None:
 
   # barrier-free flat rewrites of the hottest tiled kernels
   flat_kernels.install()
+  install_skip_decoration_sites()
+
+
+def install_skip_decoration_sites() -> None:
+  """Skip mjlab's decorative terrain sites (env origins, flat patches...).
+
+  These are viewer-only markers: one sphere site per environment plus flat-
+  patch boxes, so a 4096-env scene carries ~4100 sites that mujoco_warp then
+  transforms every step (_site_local_to_global: ~140ms/step serialized at
+  4096 envs). Pure training does not render them; robot sites are untouched.
+  """
+  from mjlab.terrains import terrain_entity as _te
+
+  cls = _te.TerrainEntity
+  for name in ("_add_env_origin_sites", "_add_terrain_origin_sites", "_add_flat_patch_sites"):
+    setattr(cls, name, lambda self: None)

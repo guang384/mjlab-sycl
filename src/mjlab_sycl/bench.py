@@ -26,6 +26,8 @@ from pathlib import Path
 import torch
 import warp as wp
 
+from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
+
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__)
