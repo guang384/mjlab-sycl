@@ -11,9 +11,8 @@ backend itself.
 - `files/_src/` — the 5 patched Python modules (`build.py`, `codegen.py`,
   `context.py`, `types.py`, `builtins.py`), copied over
   `<venv>/Lib/site-packages/warp/_src/` by the installer.
-- `files/native/` (shown as `native/`) — the 4 patched C++/header files
-  (`builtin.h`, `tile.h`, `sycl_runtime.h`, `sycl_runtime.cpp`) that kernels
-  are compiled against.
+- `files/native/` — the 4 patched C++/header files (`builtin.h`, `tile.h`,
+  `sycl_runtime.h`, `sycl_runtime.cpp`) that kernels are compiled against.
 - `native/warpsycl.dll` — the prebuilt micro-driver (SYCL queue + USM pool +
   watchdog). Placed into warp's kernel cache at install time.
 
