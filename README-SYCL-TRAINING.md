@@ -128,8 +128,8 @@ after `wp.init()`.
                        install, backend/ (the vendored warp files + warpsycl.dll
                        that ship in the wheel)
     warp_backend/      provenance + rebuild docs for the vendored backend
-                       (README.md, REBUILD.md); its files/ tree is the
-                       authoritative copy — keep src/mjlab_sycl/backend/ in sync
+                       (README.md, REBUILD.md); the backend files themselves
+                       live only in src/mjlab_sycl/backend/
     scripts/           run_guarded.py (watchdog wrapper) + attribution probes
 
 ## Known limitations

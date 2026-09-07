@@ -1,7 +1,10 @@
 # Rebuilding warpsycl.dll
 
-The bundled `native/warpsycl.dll` is built from `native/sycl_runtime.cpp`
-(oneAPI DPC++ / icx). Rebuild only when changing the backend.
+The shipped `src/mjlab_sycl/backend/warpsycl.dll` is built from
+`src/mjlab_sycl/backend/native/sycl_runtime.cpp` (oneAPI DPC++ / icx). The
+runtime is self-contained — standard C++ plus `<sycl/sycl.hpp>` only, no warp
+headers — so no extra include dirs are needed. Rebuild only when changing
+the backend.
 
 ## Toolchain (Windows)
 
@@ -9,14 +12,13 @@ The bundled `native/warpsycl.dll` is built from `native/sycl_runtime.cpp`
 - Intel oneAPI 2025.x (icx) — the SAME major version the dll was built with;
   mixing runtimes is what breaks torch-xpu coexistence (sycl8.dll collision)
 
-## Build
+## Build (from the repo root)
 
     icx /nologo /fsycl /EHsc /O2 /MD /LD /DWP_SYCL_BUILDING_RUNTIME ^
-        /I<warp-sycl repo>/warp/native ^
-        native/sycl_runtime.cpp ^
-        /Fe:native/warpsycl.dll
+        src/mjlab_sycl/backend/native/sycl_runtime.cpp ^
+        /Fe:src/mjlab_sycl/backend/warpsycl.dll
 
 ## Verify after rebuild
 
-    python -m mjlab_sycl install        # overlays + verifies device
-    python tools gates: e2e + mujoco_warp agreement vs cpu (see README-SYCL-TRAINING.md)
+    python -m mjlab_sycl install        # overlays + verifies the device
+    e2e + mujoco_warp agreement gates vs the cpu device (see README-SYCL-TRAINING.md)
