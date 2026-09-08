@@ -81,9 +81,15 @@ silently disappears. `uv sync --inexact` skips the uninstall.
 ## Using with microduck_rl (or any mjlab task package)
 
 mjlab-sycl installs *into* an existing mjlab project and trains its registered
-tasks as-is — nothing in the project needs to know about SYCL. The full recipe
-on a fresh [microduck_rl](https://github.com/pollen-robotics/microduck_rl)
-clone:
+tasks as-is — nothing in the project needs to know about SYCL. On a fresh
+[microduck_rl](https://github.com/pollen-robotics/microduck_rl) clone the
+whole setup is one command (the script below is exactly the manual recipe
+that follows, with the pip-config-env-var trap already handled):
+
+    cd D:\mjlab-sycl
+    .\scripts\setup_microduck.ps1 -Repo C:\dev\microduck_rl        # + -InstallTorchXpu on a new machine
+
+Manual equivalent:
 
     # 1. project venv (stays untouched by everything that follows)
     cd microduck_rl
