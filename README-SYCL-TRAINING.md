@@ -41,7 +41,28 @@ Into your mjlab project's venv:
 
 `install` overlays the backend onto the venv's warp package, drops
 `warpsycl.dll` into warp's kernel cache, verifies the `sycl` device comes up,
-and reports torch XPU availability.
+reports torch XPU availability, and **self-checks the overlay it just applied**
+(byte-identical to this package). The training entries re-run that check on
+every start (`patch_simulation_for_sycl()` → `ensure_overlay_synced()`): a
+stale or uv-sync-wiped overlay aborts with the remediation instead of a
+cryptic missing-device error or silently corrupt physics.
+
+**Console scripts.** `mjlab-sycl-train/-bench/-test` are only created when the
+package is installed *into the venv* — a global `pip config` `target=` (as on
+this machine) redirects the install into a shared directory that receives no
+scripts. Install from the local clone with the redirect bypassed so the
+scripts land in `.venv\Scripts\`:
+
+    cd D:\mjlab-sycl                 # the local clone
+    # This machine's pip config file sits behind a PIP_CONFIG_FILE env var, and
+    # --isolated CANNOT bypass an env-pointed config file (verified the hard
+    # way) -- clear it first (PowerShell):
+    #   Remove-Item Env:PIP_CONFIG_FILE, Env:PIP_TARGET -ErrorAction SilentlyContinue
+    <project>\.venv\Scripts\python.exe -m pip install --isolated --no-deps -e .
+    # or: uv pip install --python <project>\.venv\Scripts\python.exe --no-deps -e .
+
+(drop `--no-deps` / `-e` as you prefer; the point is that the install lands in
+the venv itself, so its `.venv\Scripts\` receives the console scripts).
 
 torch XPU is a per-machine step (deliberately NOT routed in pyproject — an
 XPU-index dependency would change the wheel for every CPU/CUDA user):
@@ -132,7 +153,10 @@ is the only reliable detector.
    no error. For bigger `nv` models raise `WARP_SYCL_SHARED_KB` and verify
    numerics against the cpu device before trusting the run.
 3. **`uv sync` / `uv run` wipes the warp overlay.** Re-install after (see
-   Install).
+   Install). The sycl entries now fail fast with a clear message if you
+   forget (`patch_simulation_for_sycl()` verifies the overlay is byte-identical
+   to the package before physics starts) — don't work around it, re-run
+   `python -m mjlab_sycl install`.
 4. **`sycl8.dll` collision.** torch's XPU wheel and oneAPI ship the same DLL
    name at incompatible versions; if the wrong one resolves first, warp's
    device registration dies with `WinError 127`. The train entry orders PATH

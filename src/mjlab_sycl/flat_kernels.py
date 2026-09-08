@@ -2,7 +2,7 @@
 """Barrier-free (flat) SYCL replacements for mujoco_warp's hottest tiled kernels.
 
 See the module docstring sections below for each kernel. Installed together
-with the SYCL simulation patch (sycl_patch.py); MJLAB_SYCL_FLAT_JTDAJ=0
+with the SYCL simulation patch (runtime_patch.py); MJLAB_SYCL_FLAT_JTDAJ=0
 disables (historical name -- it kills all four rewrites).
 """
 

@@ -9,9 +9,13 @@ queue -- exactly the points where host code reads or writes USM that kernels
 touch.
 
 Also installs the barrier-free flat rewrites of mujoco_warp's tiled hot
-kernels (see flat_kernels.py). Enable from the training entry point with
-MJLAB_SYCL=1 (wired in train_hook), or call ``patch_simulation_for_sycl()``
-directly from probes/benchmarks.
+kernels (see flat_kernels.py) and verifies the vendored SYCL backend overlay
+is in sync with this package before anything runs (see install.py) -- a
+``uv sync``/``uv run`` wipes the overlay, and a stale one fails here with a
+clear remediation instead of a cryptic missing-device error later.
+``patch_simulation_for_sycl()`` is called right after ``wp.init()`` by every
+bundled entry point (train/bench/train_viewer); custom entries and probes
+call it the same way.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import os
 import warp as wp
 
 from mjlab_sycl import flat_kernels
+from mjlab_sycl import install as _sycl_install
 
 
 def patch_simulation_for_sycl() -> None:
@@ -31,6 +36,11 @@ def patch_simulation_for_sycl() -> None:
   from the scene's device string need re-pointing to sycl: the SensorContext
   (render context feeds BVH refit kernels) and RayCastSensor ray buffers.
   """
+  # Hard guard, not a warning: a missing/stale backend overlay silently
+  # corrupts physics (or makes the device vanish) — abort before iteration 0
+  # with the exact remediation instead.
+  _sycl_install.ensure_overlay_synced()
+
   from mjlab.sim import sim as sim_mod
   from mjlab.sensor import raycast_sensor as rs_mod
   from mjlab.sensor import sensor_context as sc_mod
