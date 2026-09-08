@@ -71,7 +71,11 @@ def main() -> None:
   env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
   log_dir = Path("logs/bench_sycl_train") / f"{args.device}_{args.num_envs}"
-  ppo_device = os.environ.get("MJLAB_PPO_DEVICE", "cpu")
+  # match train's default: PPO on xpu when available (bench previously
+  # defaulted to cpu, understating the realistic iteration time by ~3 s)
+  ppo_device = os.environ.get("MJLAB_PPO_DEVICE") or (
+    "xpu" if torch.xpu.is_available() else "cpu"
+  )
   runner = MjlabOnPolicyRunner(env, dataclasses.asdict(agent_cfg), str(log_dir), ppo_device)
 
   # -- timing instrumentation ------------------------------------------------

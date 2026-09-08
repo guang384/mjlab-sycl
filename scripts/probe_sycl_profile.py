@@ -157,6 +157,12 @@ def main() -> None:
   parser.add_argument("--steps", type=int, default=5)
   args = parser.parse_args()
 
+  # sycl8.dll PATH ordering -- must run before torch/warp come up (see
+  # _bootstrap); this script imports torch through mjlab below.
+  from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
+
+  prepare_sycl_runtime_path()
+
   wp.init()
   patch_simulation_for_sycl()
   install_counters()
