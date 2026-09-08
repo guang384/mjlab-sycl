@@ -15,7 +15,7 @@ Developed and battle-tested against microduck_rl's 14-servo biped at 4096 envs.
 | `runtime_patch` | Routes mjlab/mujoco_warp physics onto the `sycl` device: warp arrays live in USM shared memory (`wp.to_torch` wraps them zero-copy), torch tensors stay on CPU, and the async kernel queue is drained at every sim call boundary. |
 | `flat_kernels` | Barrier-free rewrites of mujoco_warp's hottest tiled kernels (JTDAJ, contact_jacobian, both Choleskys, factorize), intercepted at `wp.launch_tiled`. Warp's tiled kernels are one work-item-per-world — dead slow on an iGPU. |
 | `train` / `bench` / `train_viewer` | Entry points that bypass mjlab's CUDA-only `select_gpus` (it indexes torch's empty CUDA list on Intel-only machines and dies before iteration 0). |
-| `test_e2e` / `test_mujoco` | Verification gates: backend mechanics bit-exact vs the cpu device, and real mujoco_warp physics agreeing with the cpu device (see Verification gates below). One command: `mjlab-sycl-test`. |
+| `test_overlay` / `test_e2e` / `test_mujoco` | Verification gates: host-only overlay-sync check (no GPU), backend mechanics bit-exact vs the cpu device, and real mujoco_warp physics agreeing with the cpu device (see Verification gates below). One command: `mjlab-sycl-test`. |
 
 No third-party package files are modified on disk except the documented warp
 overlay — a fresh `uv sync` remains ground truth (and wipes the overlay; see
@@ -103,9 +103,17 @@ after `wp.init()`.
 
 ## Verification gates
 
-    mjlab-sycl-test                     # both gates, in order
+    mjlab-sycl-test                     # all gates, in order
+    python -m mjlab_sycl.test_overlay   # host-only overlay-sync check alone
     python -m mjlab_sycl.test_e2e       # backend mechanics alone
     python -m mjlab_sycl.test_mujoco    # mujoco_warp physics vs cpu alone
+
+`test_overlay` needs no GPU: it asserts every shipped backend file is
+byte-identical to what install() placed in the environment's warp package and
+kernel cache (plus the warp-version guard), so a uv-sync-wiped or drifted
+overlay aborts before the GPU gates run. Its file-comparison logic is also
+pytest-discoverable (`pytest src/mjlab_sycl/test_overlay.py`) against
+throwaway temp dirs.
 
 `test_e2e` exercises device registration, USM-backed arrays with host
 readback, kernel compilation through the icx chain, module-cache relaunch,
