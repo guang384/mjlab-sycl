@@ -77,22 +77,14 @@ def build_cpu_model(robot_xml: str):
     + text[wb:]
   )
 
-  # This simplified model has collision geoms only on the feet (mesh geoms do
-  # not collide in MuJoCo), so a fallen duck passes through the floor. Add
-  # invisible body capsules around the trunk as an approximate shell so it
-  # rests ON the ground in any fall pose. Injected BEFORE compiling so every
-  # branch (reused or injected actuators) gets them.
-  body_caps = (
-    '    <geom type="capsule" fromto="0 0 -0.04  0 0 0.02" size="0.055" '
-    'contype="1" conaffinity="1" group="2" rgba="0 0 0 0"/>\n'
-    '    <geom type="capsule" fromto="-0.10 0 0  0.11 0 0" size="0.05" '
-    'contype="1" conaffinity="1" group="2" rgba="0 0 0 0"/>\n'
-    '    <geom type="capsule" fromto="0 -0.055 0  0 0.055 0" size="0.05" '
-    'contype="1" conaffinity="1" group="2" rgba="0 0 0 0"/>\n'
+  # Use the real shell for contact: MuJoCo collides convex meshes against the
+  # plane, so flip the visual class from contype=0 to 1 (mesh geoms do not
+  # collide by default). The duck can then topple normally and rests ON its
+  # own body instead of sinking through the floor.
+  text = text.replace(
+    '<geom type="mesh" contype="0" conaffinity="0" group="2"/>',
+    '<geom type="mesh" contype="1" conaffinity="1" group="2"/>',
   )
-  fjd = text.index('<freejoint name="trunk_base_freejoint"/>')
-  fjd = text.index("/>", fjd) + 2
-  text = text[:fjd] + "\n" + body_caps + text[fjd:]
 
   base = mujoco.MjModel.from_xml_string(text)
   names = _servo_names(base)
