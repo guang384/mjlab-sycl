@@ -18,7 +18,9 @@ jobs:
         run: |
           uv python install 3.12
           uv venv .venv --python 3.12
-          uv pip install --python .venv --no-deps warp-lang==1.12.0 .
+          # --no-deps: the host project normally provides mjlab/torch; CI only
+          # needs warp (+numpy, its import-time dep) and the package itself.
+          uv pip install --python .venv --no-deps warp-lang==1.12.0 numpy .
           uv pip install --python .venv pytest
 
       - name: Overlay unit tests (host-only)
