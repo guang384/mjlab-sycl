@@ -125,6 +125,22 @@ def build_k_model(robot_xml: str, k: int, spacing: float = 0.75):
     + text[wb:]
   )
 
+  # Only the feet have collision geoms in this model (mesh geoms do not
+  # collide in MuJoCo), so a fallen duck would pass through the floor: add
+  # invisible body capsules as an approximate shell so any fall pose rests
+  # ON the ground.
+  body_caps = (
+    '    <geom type="capsule" fromto="0 0 -0.04  0 0 0.02" size="0.055" '
+    'contype="1" conaffinity="1" group="2" rgba="0 0 0 0"/>\n'
+    '    <geom type="capsule" fromto="-0.10 0 0  0.11 0 0" size="0.05" '
+    'contype="1" conaffinity="1" group="2" rgba="0 0 0 0"/>\n'
+    '    <geom type="capsule" fromto="0 -0.055 0  0 0.055 0" size="0.05" '
+    'contype="1" conaffinity="1" group="2" rgba="0 0 0 0"/>\n'
+  )
+  idx = text.index('<freejoint name="trunk_base_freejoint"/>')
+  idx = text.index("/>", idx) + 2
+  text = text[:idx] + "\n" + body_caps + text[idx:]
+
   body = _extract_duck_body(text)
   clones = []
   for i in range(1, k):
