@@ -78,6 +78,39 @@ torch install into an unusable state.
 overlay.** Re-run the two install commands afterwards, or the sycl device
 silently disappears. `uv sync --inexact` skips the uninstall.
 
+## Using with microduck_rl (or any mjlab task package)
+
+mjlab-sycl installs *into* an existing mjlab project and trains its registered
+tasks as-is — nothing in the project needs to know about SYCL. The full recipe
+on a fresh [microduck_rl](https://github.com/pollen-robotics/microduck_rl)
+clone:
+
+    # 1. project venv (stays untouched by everything that follows)
+    cd microduck_rl
+    uv sync
+
+    # 2. this package, installed INTO the venv so its console scripts land in
+    #    .venv\Scripts\ (clear the pip-config env vars first on this machine)
+    #    Remove-Item Env:PIP_CONFIG_FILE, Env:PIP_TARGET -ErrorAction SilentlyContinue
+    cd D:\mjlab-sycl
+    ..\microduck_rl\.venv\Scripts\python.exe -m pip install --isolated --no-deps -e .
+
+    # 3. per-machine torch XPU (see above), then overlay the warp backend
+    ..\microduck_rl\.venv\Scripts\python.exe -m mjlab_sycl install
+
+    # 4. one command decides whether this machine can train here:
+    ..\microduck_rl\.venv\Scripts\mjlab-sycl-check        # (mjlab-sycl-check)
+
+    # 5. every task microduck_rl registers trains as-is:
+    mjlab-sycl-train Mjlab-Velocity-Flat-MicroDuck --num-envs 4096 --max-iterations 1000
+
+`mjlab-sycl-check` is read-only diagnosis: platform/Python, warp overlay sync,
+Intel oneAPI runtime, sycl device, a real device kernel vs cpu, torch XPU, and
+that the venv's mjlab task registry (microduck_rl) imports — each line prints
+its fix when it fails, exit code 0/1. Remember the footguns: after any
+`uv sync` / `uv run` re-run steps 3 (+ re-install of this package) — the train
+entries and `mjlab-sycl-check` both tell you when the overlay is gone.
+
 ## Usage
 
     mjlab-sycl-train <TASK_ID> --num-envs 4096 --max-iterations 1000
@@ -102,6 +135,9 @@ themselves; for a custom entry point, call `patch_simulation_for_sycl()` right
 after `wp.init()`.
 
 ## Verification gates
+
+> Environment preflight first: `mjlab-sycl-check` (read-only). These gates are
+> the full numerical verification on top of a healthy environment.
 
     mjlab-sycl-test                     # all gates, in order
     python -m mjlab_sycl.test_overlay   # host-only overlay-sync check alone
