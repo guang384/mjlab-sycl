@@ -22,6 +22,8 @@ from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
 prepare_sycl_runtime_path()
 
 import torch  # noqa: E402
+from mjlab_sycl._bootstrap import configure_torch_threads  # noqa: E402
+configure_torch_threads()  # cap CPU threads (MJLAB_TORCH_THREADS)
 import warp as wp  # noqa: E402
 
 from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402

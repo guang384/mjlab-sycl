@@ -182,6 +182,7 @@ is the only reliable detector.
 | `WARP_SYCL_SHARED_KB` | 16 (`WP_MAX_SYCL_SHARED` in tile.h) | tile SLM arena size baked in at kernel-build time |
 | `WARP_SYCL_SYNC_TIMEOUT_S` | 180 (0 disables) | in-process GPU watchdog; a hung kernel aborts and names the culprit |
 | `MJLAB_PPO_DEVICE` | `cpu` | torch device used by `bench` |
+| `MJLAB_TORCH_THREADS` | `2` | torch intra-op threads cap. Env managers run hundreds of tiny torch ops per step; all-core default wastes ~3 CPU cores for no speed (measured 4096 envs: 14->4.6 cores, 2->1.9 cores, same wall). Override if you want more. |
 
 ## Performance (Arc 130T, microduck velocity, 4096 envs)
 

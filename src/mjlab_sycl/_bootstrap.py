@@ -19,6 +19,30 @@ import os
 import sys
 
 
+def configure_torch_threads(default: int = 2) -> None:
+  """Cap torch intra-op threads (default 2, override MJLAB_TORCH_THREADS).
+
+  The env managers run hundreds of SMALL torch ops per sim step (obs/reward
+  over N envs); with torch's default = all cores, each tiny op fans out to 14
+  threads -- a large CPU tax for almost no speed. Measured at 4096 envs:
+  14 threads -> ~4.6 cores busy, 2 threads -> ~1.9 cores, wall time unchanged
+  (~670 ms/step both); 1 thread costs ~+16% wall. PPO runs on torch.xpu, so
+  capping CPU threads does not slow the update.
+  """
+  try:
+    import torch
+
+    n = int(os.environ.get("MJLAB_TORCH_THREADS", str(default)))
+    if n > 0:
+      torch.set_num_threads(n)
+    try:
+      torch.set_num_interop_threads(1)
+    except Exception:
+      pass  # already set in this process
+  except Exception:
+    pass
+
+
 def prepare_sycl_runtime_path() -> None:
   oneapi = os.environ.get(
       "WARP_SYCL_ONEAPI_BIN",
