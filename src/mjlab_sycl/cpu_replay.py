@@ -92,12 +92,24 @@ def build_cpu_model(robot_xml: str):
   return model, names, idx
 
 
+def _latest_in(directory: Path):
+  files = sorted(directory.glob("model_*.pt"),
+                 key=lambda p: int(re.search(r"model_(\d+)\.pt$", p.name).group(1)))
+  return files[-1] if files else None
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("task")
-  parser.add_argument("--checkpoint", required=True)
+  parser.add_argument("--checkpoint", default=None,
+                      help="exact checkpoint path, OR the log dir of a RUNNING "
+                           "training (auto-loads the newest model_*.pt and hot-"
+                           "swaps to newer ones as the trainer saves them)")
   parser.add_argument("--vx", type=float, default=0.4)
-  parser.add_argument("--max-s", type=float, default=120.0)
+  parser.add_argument("--max-s", type=float, default=600.0)
+  parser.add_argument("--startup-wait-s", type=float, default=3600.0,
+                      help="when watching a training dir with no checkpoint yet, "
+                           "hold the duck at HOME until the first save appears")
   parser.add_argument("--robot-xml", default=None)
   args = parser.parse_args()
 
@@ -110,6 +122,12 @@ def main() -> None:
     robot_xml = str(md_dir / "robot" / "microduck" / "robot_walk.xml")
   else:
     robot_xml = args.robot_xml
+
+  ckpt_arg = Path(args.checkpoint) if args.checkpoint else None
+  watch_dir = ckpt_arg if (ckpt_arg and ckpt_arg.is_dir()) else None
+  if watch_dir is not None:
+    print(f"[cpu_replay] watching training dir {watch_dir} for checkpoints",
+          flush=True)
 
   # ---- load policy through mjlab (this env is never stepped) ---------------
   from mjlab.envs import ManagerBasedRlEnv
@@ -127,9 +145,43 @@ def main() -> None:
   env = ManagerBasedRlEnv(cfg=env_cfg, device="cpu")
   env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
   runner = MjlabOnPolicyRunner(env, dataclasses.asdict(agent_cfg), None, "cpu")
-  runner.load(args.checkpoint)
   policy = runner.alg
-  print(f"[cpu_replay] checkpoint loaded: {args.checkpoint}", flush=True)
+  _loaded = {"path": None}
+
+  def _pick_ckpt():
+    if ckpt_arg is None:
+      return None
+    if watch_dir is not None:
+      return _latest_in(watch_dir)
+    return ckpt_arg
+
+  def _reload(ckpt_path) -> None:
+    for attempt in range(4):
+      try:
+        runner.load(str(ckpt_path))
+        break
+      except Exception as e:
+        if attempt == 3:
+          print(f"[cpu_replay] reload of {ckpt_path.name} failed: {e!r}", flush=True)
+          return
+        time.sleep(0.6)  # trainer may still be writing the file
+    _loaded["path"] = ckpt_path
+    print(f"[cpu_replay] checkpoint loaded: {ckpt_path.name}", flush=True)
+
+  # initial checkpoint: wait for the first save when watching a fresh run
+  ckpt = _pick_ckpt()
+  if ckpt is None and watch_dir is not None:
+    waited = 0.0
+    print("[cpu_replay] no checkpoint yet -- holding HOME until the trainer "
+          f"saves one (waiting up to {args.startup_wait_s:.0f}s)", flush=True)
+    while ckpt is None and waited < args.startup_wait_s:
+      time.sleep(1.0)
+      waited += 1.0
+      ckpt = _pick_ckpt()
+  if ckpt is None:
+    raise SystemExit("no checkpoint found (give --checkpoint <file> or a "
+                     "training log dir)")
+  _reload(ckpt)
 
   # ---- cpu mujoco model -----------------------------------------------------
   model, names, act_idx = build_cpu_model(robot_xml)
@@ -245,6 +297,10 @@ def main() -> None:
       if nsteps % 400 == 0:
         print(f"[cpu_replay] step={nsteps} x={data.qpos[0]:.2f} z={data.qpos[2]:.2f} "
               f"nsteps/s={nsteps/(time.perf_counter()-t_start):.0f}", flush=True)
+      if watch_dir is not None and nsteps % 120 == 0:
+        newer = _pick_ckpt()
+        if newer is not None and newer != _loaded["path"]:
+          _reload(newer)  # hot-swap to the trainer's newest checkpoint
       # pace to real time (50 Hz physics)
       want = nsteps * dt
       now = time.perf_counter() - t_start
