@@ -2,6 +2,11 @@
 
 All notable changes to mjlab-sycl.
 
+## [Unreleased]
+
+<!-- Add new changes here as they land; fold into a dated release section when
+     tagging. -->
+
 ## [0.2.0] - 2026-09-08 — first public release candidate
 
 First release shape for the community: environment preflight, one-command
