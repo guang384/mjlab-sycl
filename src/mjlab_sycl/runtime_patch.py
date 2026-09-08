@@ -26,6 +26,7 @@ import warp as wp
 
 from mjlab_sycl import flat_kernels
 from mjlab_sycl import install as _sycl_install
+from mjlab_sycl import loop_poll as _sycl_loop
 
 
 def patch_simulation_for_sycl() -> None:
@@ -143,6 +144,10 @@ def patch_simulation_for_sycl() -> None:
   # barrier-free flat rewrites of the hottest tiled kernels
   flat_kernels.install()
   install_skip_decoration_sites()
+
+  # batched convergence polling for the sycl capture_while fallback
+  # (MJLAB_SYCL_POLL_EVERY=N; off by default -> original per-iteration polls)
+  _sycl_loop.install_poll_batching()
 
 
 def install_skip_decoration_sites() -> None:
