@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    name: CPU-side checks (Windows)
+    runs-on: windows-latest
+    env:
+      CI: "true"   # skips the real-overlay gate in test_overlay (needs an Intel GPU)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install (no-deps) + warp
+        run: |
+          uv python install 3.12
+          uv venv .venv --python 3.12
+          uv pip install --python .venv --no-deps warp-lang==1.12.0 .
+          uv pip install --python .venv pytest
+
+      - name: Overlay unit tests (host-only)
+        run: .venv\Scripts\python -m pytest src/mjlab_sycl/test_overlay.py -q
+
+      - name: Import smoke
+        run: |
+          .venv\Scripts\python -c "import mjlab_sycl.doctor, mjlab_sycl.install, mjlab_sycl.runtime_patch; print('imports ok')"
+
+      - name: Build wheel
+        run: uv build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  # GPU gates (test_e2e / test_mujoco / full mjlab-sycl-test) need an Intel GPU
+  # with oneAPI: see gpu-gates.yml for the self-hosted variant.

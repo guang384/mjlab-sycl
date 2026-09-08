@@ -1,5 +1,5 @@
 import sys, numpy as np, dataclasses
-sys.path.insert(0, 'D:/mjlab-sycl/src')
+# historical debug probe: requires mjlab-sycl importable (editable install)
 import warp as wp
 from mjlab_sycl.runtime_patch import patch_simulation_for_sycl
 patch_simulation_for_sycl()

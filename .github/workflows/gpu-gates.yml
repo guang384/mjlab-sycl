@@ -1,0 +1,35 @@
+# Full verification gates on a machine with an Intel GPU + oneAPI.
+#
+# The numerical gates (backend e2e, mujoco_warp physics vs cpu) must run on an
+# actual Intel iGPU/dGPU with the oneAPI runtime installed, so they are NOT on
+# the shared CI runners. Register a self-hosted runner on an Intel-GPU Windows
+# box, tag it `intel-gpu`, and trigger manually after backend changes:
+
+#   - create a warp overlay environment: uv sync in a host mjlab project venv,
+#     install this package into it, run `python -m mjlab_sycl install`
+#   - then dispatch this workflow.
+
+name: gpu-gates
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    name: mjlab-sycl-test (Intel GPU)
+    runs-on: [self-hosted, intel-gpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment preflight
+        run: |
+          # adjust to the configured environment's python
+          $py = "path\to\project\.venv\Scripts\python.exe"
+          & $py -m mjlab_sycl.doctor
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Full verification gates
+        run: |
+          $py = "path\to\project\.venv\Scripts\python.exe"
+          & $py -m mjlab_sycl.test   # overlay gate + backend e2e + mujoco physics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

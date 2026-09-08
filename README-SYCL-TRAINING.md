@@ -53,7 +53,7 @@ this machine) redirects the install into a shared directory that receives no
 scripts. Install from the local clone with the redirect bypassed so the
 scripts land in `.venv\Scripts\`:
 
-    cd D:\mjlab-sycl                 # the local clone
+    cd <path-to-mjlab-sycl>         # the local clone
     # This machine's pip config file sits behind a PIP_CONFIG_FILE env var, and
     # --isolated CANNOT bypass an env-pointed config file (verified the hard
     # way) -- clear it first (PowerShell):
@@ -86,7 +86,7 @@ tasks as-is — nothing in the project needs to know about SYCL. On a fresh
 whole setup is one command (the script below is exactly the manual recipe
 that follows, with the pip-config-env-var trap already handled):
 
-    cd D:\mjlab-sycl
+    cd <path-to-mjlab-sycl>
     .\scripts\setup_microduck.ps1 -Repo C:\dev\microduck_rl        # + -InstallTorchXpu on a new machine
 
 Manual equivalent:
@@ -98,7 +98,7 @@ Manual equivalent:
     # 2. this package, installed INTO the venv so its console scripts land in
     #    .venv\Scripts\ (clear the pip-config env vars first on this machine)
     #    Remove-Item Env:PIP_CONFIG_FILE, Env:PIP_TARGET -ErrorAction SilentlyContinue
-    cd D:\mjlab-sycl
+    cd <path-to-mjlab-sycl>
     ..\microduck_rl\.venv\Scripts\python.exe -m pip install --isolated --no-deps -e .
 
     # 3. per-machine torch XPU (see above), then overlay the warp backend

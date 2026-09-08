@@ -170,6 +170,12 @@ def check_warp_version_drift_is_reported() -> None:
 # ---------------------------------------------------------------------------
 
 def test_real_env_synced():
+  # CI runners have no installed sycl overlay (no Intel GPU): the real-env
+  # check needs `python -m mjlab_sycl install` to have been run. The pure
+  # file-comparison tests above cover the logic anywhere.
+  if os.environ.get("CI"):
+    import pytest
+    pytest.skip("real-overlay check needs an installed sycl overlay (GPU)")
   check_real_env_synced()
 
 

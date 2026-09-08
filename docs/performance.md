@@ -15,11 +15,11 @@ Task: `Mjlab-Velocity-Flat-MicroDuck` (14 servos, nv=20), 50 Hz control.
 .venv\Scripts\mjlab-sycl-bench.exe --device sycl  --num-envs 4096 --iters 3
 .venv\Scripts\mjlab-sycl-bench.exe --device cpu   --num-envs 1024 --iters 2   # pure warp-cpu, no sycl patch
 # per-step API census (launches / drains / allocs per env step)
-python D:\mjlab-sycl\scripts\probe_sycl_profile.py --num-envs 4096 --steps 20
+python scripts\probe_sycl_profile.py --num-envs 4096 --steps 20
 # per-kernel device time attribution (serialized; relative ranking valid)
-python D:\mjlab-sycl\scripts\probe_kernel_times.py --num-envs 4096 --steps 4
+python scripts\probe_kernel_times.py --num-envs 4096 --steps 4
 # real efc usage vs compiled buffer (njmax padding audit)
-python D:\mjlab-sycl\scripts\probe_efc_audit.py --num-envs 512 --steps 30
+python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 ```
 
 ## Headline numbers
