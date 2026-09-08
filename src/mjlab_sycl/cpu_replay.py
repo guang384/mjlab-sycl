@@ -53,17 +53,27 @@ def build_cpu_model(robot_xml: str):
   meshdir = str(Path(robot_xml).resolve().parent / "assets")
   text = re.sub(r'meshdir="[^"]*"', lambda m: f'meshdir="{meshdir}"', text, count=1)
   # robot_walk.xml carries no light/floor/background (scene_walk.xml adds
-  # them) -- inject a headlight, a directional light and a floor.
+  # them) -- inject a headlight, a directional light and a VISIBLE checkered
+  # floor (a bare plane renders as a dark void that looks like no ground).
   text = text.replace(
     "</mujoco>",
+    '  <asset>\n'
+    '    <texture type="2d" name="groundplane" builtin="checker" mark="edge" '
+    'rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" '
+    'width="300" height="300"/>\n'
+    '    <material name="groundplane" texture="groundplane" texuniform="true" '
+    'texrepeat="5 5" reflectance="0.2"/>\n'
+    '  </asset>\n'
     '  <visual>\n    <headlight diffuse="0.6 0.6 0.6" ambient="0.45 0.45 0.45" '
-    'specular="0 0 0"/>\n    <global azimuth="160" elevation="-20"/>\n  </visual>\n</mujoco>',
+    'specular="0 0 0"/>\n    <global azimuth="160" elevation="-20"/>\n  </visual>\n'
+    '</mujoco>',
   )
   wb = text.index("<worldbody>") + len("<worldbody>")
   text = (
     text[:wb]
     + '\n  <light pos="0 0 4" dir="0 0 -1" directional="true"/>\n'
-    + '  <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 0"/>\n'
+    + '  <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 0" '
+    + 'material="groundplane"/>\n'
     + text[wb:]
   )
   base = mujoco.MjModel.from_xml_string(text)

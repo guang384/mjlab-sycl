@@ -102,17 +102,26 @@ def build_k_model(robot_xml: str, k: int, spacing: float = 0.75):
 
   # robot_walk.xml carries no light/floor/background (scene_walk.xml adds
   # them), so the k-model would render pitch black -- inject a headlight,
-  # a floor and a light into the composed model.
+  # a light and a VISIBLE checkered floor into the composed model.
   text = text.replace(
     "</mujoco>",
+    '  <asset>\n'
+    '    <texture type="2d" name="groundplane" builtin="checker" mark="edge" '
+    'rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" '
+    'width="300" height="300"/>\n'
+    '    <material name="groundplane" texture="groundplane" texuniform="true" '
+    'texrepeat="5 5" reflectance="0.2"/>\n'
+    '  </asset>\n'
     '  <visual>\n    <headlight diffuse="0.6 0.6 0.6" ambient="0.45 0.45 0.45" '
-    'specular="0 0 0"/>\n    <global azimuth="160" elevation="-20"/>\n  </visual>\n</mujoco>',
+    'specular="0 0 0"/>\n    <global azimuth="160" elevation="-20"/>\n  </visual>\n'
+    '</mujoco>',
   )
   wb = text.index("<worldbody>") + len("<worldbody>")
   text = (
     text[:wb]
     + '\n  <light pos="0 0 4" dir="0 0 -1" directional="true"/>\n'
-    + '  <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 0"/>\n'
+    + '  <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 0" '
+    + 'material="groundplane"/>\n'
     + text[wb:]
   )
 
