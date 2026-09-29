@@ -25,11 +25,13 @@ import os
 import warp as wp
 
 from mjlab_sycl import flat_kernels
+from mjlab_sycl import fused_linesearch as _sycl_fused_ls
 from mjlab_sycl import fused_solver as _sycl_fused_solver
 from mjlab_sycl import fused_tree as _sycl_fused_tree
 from mjlab_sycl import install as _sycl_install
 from mjlab_sycl import launch_cache as _sycl_launch_cache
 from mjlab_sycl import loop_poll as _sycl_loop
+from mjlab_sycl import skip_empty as _sycl_skip_empty
 
 
 def patch_simulation_for_sycl() -> None:
@@ -255,6 +257,14 @@ def patch_simulation_for_sycl() -> None:
   # a cache hit on the unfused kernel would skip the zeroing while the
   # suppressed launches stay suppressed.
   _sycl_fused_solver.install()
+
+  # Skip 0-dim launches (flex/tendon/equality/limit when model has none).
+  # Installed as the OUTERMOST layer so all inner interceptors never see
+  # the suppressed launches.  Must be after fused_solver/fused_tree/
+  # fused_linesearch install (which set up their own interceptors) so
+  # _prev_launch captures their chain.
+  _sycl_skip_empty.install()
+  _sycl_fused_ls.install()
 
   # Fused set_const_0 + solver_tail: only beneficial on CPU (SYCL GPU
   # prefers the original parallel kernels — the fused versions serialize
