@@ -25,7 +25,10 @@ import os
 import warp as wp
 
 from mjlab_sycl import flat_kernels
+from mjlab_sycl import fused_solver as _sycl_fused_solver
+from mjlab_sycl import fused_tree as _sycl_fused_tree
 from mjlab_sycl import install as _sycl_install
+from mjlab_sycl import launch_cache as _sycl_launch_cache
 from mjlab_sycl import loop_poll as _sycl_loop
 
 
@@ -58,6 +61,53 @@ def patch_simulation_for_sycl() -> None:
   orig_recompute = sim_mod.Simulation.recompute_constants
 
   def init(self, num_envs, cfg, model, device):
+    # Adaptive njmax: the default velocity env cfg sets njmax=1500 which
+    # wastes 99% of solver work-items for small robots (actual nefc ~14-106).
+    # Use mj_forward to measure the baseline nefc, then add headroom for
+    # contact-heavy transients (falls, multi-body contact during acrobatics):
+    #   njmax_est = baseline_nefc * 8  (covers 8x spike from 14 → 112)
+    # Capped at the configured value (don't increase beyond what caller set).
+    # Override with MJLAB_SYCL_NJMAX=N (force) or =0 (disable).
+    import mujoco as _mj
+    njmax_override = os.environ.get("MJLAB_SYCL_NJMAX", "")
+    if njmax_override == "0":
+      pass  # explicitly disabled
+    elif njmax_override:
+      cfg.njmax = int(njmax_override)
+    else:
+      # measure baseline constraint count from initial pose
+      _d = _mj.MjData(model)
+      _mj.mj_forward(model, _d)
+      baseline_nefc = max(_d.nefc, 1)
+      # The static baseline can't predict contact-dense transients (falls,
+      # rolls): microduck walks at nefc=14 but rolls at 122 (~9x).  Use
+      # baseline * 16 (joint limits + contact spike headroom) floored at
+      # nq * 8 (every joint limit active + contact rows), min 96.  This is
+      # conservative: it reduces the 1500 default by ~10x for small robots
+      # while leaving large models (humanoid, nv=50+) nearly unchanged.
+      nq = model.nq
+      njmax_est = max(baseline_nefc * 16, nq * 8, 96)
+      # only reduce if configured value exceeds the estimate
+      if cfg.njmax is None or cfg.njmax > njmax_est:
+        cfg.njmax = njmax_est
+
+    # Adaptive solver iterations: mjlab's velocity env cfg sets iterations=10
+    # and ls_iterations=20, but small-robot locomotion typically converges in
+    # 2-5 iterations with 5-10 line-search steps.  Reducing these on the SYCL
+    # device cuts solver time ~2.5x with no NaN (verified on microduck walking
+    # and side_roll).  Only applies when the configured values exceed the
+    # adaptive defaults; user can override with MJLAB_SYCL_LS_ITER / _ITER.
+    ls_override = os.environ.get("MJLAB_SYCL_LS_ITER", "")
+    if ls_override:
+      cfg.mujoco.ls_iterations = int(ls_override)
+    elif cfg.mujoco.ls_iterations and cfg.mujoco.ls_iterations > 10:
+      cfg.mujoco.ls_iterations = 10
+    iter_override = os.environ.get("MJLAB_SYCL_ITER", "")
+    if iter_override:
+      cfg.mujoco.iterations = int(iter_override)
+    elif cfg.mujoco.iterations and cfg.mujoco.iterations > 8:
+      cfg.mujoco.iterations = 8
+
     orig_init(self, num_envs, cfg, model, "sycl")
     # torch-facing device: mjlab allocates all torch tensors with this string,
     # and torch has no sycl backend here. wp_device stays on sycl.
@@ -69,6 +119,50 @@ def patch_simulation_for_sycl() -> None:
       drain()
 
     return wrapper
+
+  # Lite forward: skip solver in the final sim.forward() call.
+  #
+  # env.step() runs 4 physics substeps (each with full solver), then one
+  # sim.forward() to refresh derived quantities for observations.  That final
+  # forward re-runs the full pipeline including the constraint solver (~80ms
+  # on 4096 envs), but obs/reward for typical locomotion tasks only read
+  # kinematics (xpos/xquat/cvel from fwd_position+fwd_velocity) and contact
+  # flags (from collision detection inside fwd_position) — none read solver
+  # outputs (qacc, efc.force, efc.Ma).
+  #
+  # This patch replaces the final sim.forward() with a lite version that
+  # runs fwd_position + fwd_velocity + sensors but skips the solver.
+  # Controlled by MJLAB_SYCL_LITE_FORWARD (default "1" = on, "0" = off).
+  _lite_forward = os.environ.get("MJLAB_SYCL_LITE_FORWARD", "1").strip().lower() not in (
+      "0", "false", "off"
+  )
+  if _lite_forward:
+    import mujoco_warp as _mjwarp
+    from mujoco_warp._src import forward as _mj_fwd
+    from mujoco_warp._src import sensor as _mj_sensor
+
+    def lite_forward(self):
+      with wp.ScopedDevice(self.wp_device):
+        if self.use_cuda_graph and self.forward_graph is not None:
+          # Can't lite-forward a captured graph (it has the full solver).
+          # Fall back to full forward for graph mode.
+          wp.capture_launch(self.forward_graph)
+        else:
+          m = self._wp_model
+          d = self._wp_data
+          _mj_fwd.fwd_position(m, d, factorize=False)
+          d.sensordata.zero_()
+          _mj_sensor.sensor_pos(m, d)
+          _mj_fwd.fwd_velocity(m, d)
+          _mj_sensor.sensor_vel(m, d)
+        # drain so host reads in reward/obs see completed kernels
+        wp.synchronize_device("sycl")
+
+    sim_mod.Simulation.forward = lite_forward
+    print("[sycl-lite] lite forward (skip solver in final forward) installed "
+          "(MJLAB_SYCL_LITE_FORWARD=0 to disable)")
+  else:
+    sim_mod.Simulation.forward = drained(orig_forward)
 
   # SensorContext's render-context arrays are kernel inputs/outputs and must
   # live on the sim device. It only derives wp arrays from the device string,
@@ -144,6 +238,36 @@ def patch_simulation_for_sycl() -> None:
   # barrier-free flat rewrites of the hottest tiled kernels
   flat_kernels.install()
   install_skip_decoration_sites()
+
+  # cached wp.launch: skip pack_arg/invoke/ArgsStruct for repeated
+  # (kernel, args, dim) launches (~1500/step in the physics hot path,
+  # ~48% of step time is host-side launch overhead). Installed after
+  # flat_kernels so its wp.launch re-routes also benefit from the cache.
+  _sycl_launch_cache.install()
+
+  # Fused tree chains: one launch per chain instead of one per kinematic
+  # depth level (5 chains x 7 levels = 210 launches/step -> 30).
+  _sycl_fused_tree.install()
+
+  # Fused solver zero/rotate launches: the four per-iteration zero kernels
+  # fold into the tail of linesearch_jaref.  MUST be installed after
+  # launch_cache (outer layer) so the cache sees the fused jaref kernel —
+  # a cache hit on the unfused kernel would skip the zeroing while the
+  # suppressed launches stay suppressed.
+  _sycl_fused_solver.install()
+
+  # Fused set_const_0 + solver_tail: only beneficial on CPU (SYCL GPU
+  # prefers the original parallel kernels — the fused versions serialize
+  # per-world work and lose parallelism).  Enable explicitly on CPU with
+  #   MJLAB_SYCL_FUSED_SET_CONST=1 / MJLAB_SYCL_FUSED_SOLVER_TAIL=1
+  # (auto-enabled when the sim device is CPU, not sycl).
+  _is_cpu_sim = os.environ.get("MJLAB_SYCL_SIM_DEVICE", "sycl") == "cpu"
+  if _is_cpu_sim or os.environ.get("MJLAB_SYCL_FUSED_SET_CONST", "").strip().lower() in ("1", "true", "on"):
+    from mjlab_sycl import fused_set_const
+    fused_set_const.install()
+  if _is_cpu_sim or os.environ.get("MJLAB_SYCL_FUSED_SOLVER_TAIL", "").strip().lower() in ("1", "true", "on"):
+    from mjlab_sycl import fused_solver_tail
+    fused_solver_tail.install()
 
   # batched convergence polling for the sycl capture_while fallback
   # (MJLAB_SYCL_POLL_EVERY=N; off by default -> original per-iteration polls)
