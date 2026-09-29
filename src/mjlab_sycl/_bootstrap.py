@@ -14,9 +14,69 @@ PATH ordering (first match wins):
      appended last so its older sycl8.dll can never shadow oneAPI's
 """
 
+import ctypes
 import glob
 import os
 import sys
+
+# DLLs shipped by BOTH oneAPI and the pip runtime stack under the same name.
+# The Windows loader reuses whatever module is already in the process by name,
+# so whichever copy loads first wins for the whole process. warpsycl.dll is
+# built against oneAPI 2025.3 and dies with WinError 127 (missing exports) if
+# it resolves the pip intel-sycl-rt's older sycl8/ur_loader; torch-xpu (built
+# against 2025.2) is forward-compatible with the newer oneAPI runtime, so
+# pinning the oneAPI copies first serves both.
+_COMPILER_DLLS = [
+    "sycl8.dll",
+    "ur_loader.dll",
+    "ur_adapter_level_zero.dll",
+    "ur_adapter_level_zero_v2.dll",
+    "ur_adapter_opencl.dll",
+    "ur_win_proxy_loader.dll",
+    "tcm.dll",
+    "umf.dll",
+    "sycl-jit.dll",
+    "common_clang64.dll",
+    "OpenCL.dll",
+    "omptarget.dll",
+    "omptarget.sycl.wrap.dll",
+    "omptarget.rtl.level0.dll",
+    "omptarget.rtl.opencl.dll",
+    "omptarget.rtl.unified_runtime.dll",
+]
+# MKL SYCL domain libs are only named identically within the same MKL major
+# (mkl_sycl_*.5.dll in both oneAPI 2025.3 and onemkl-sycl-* 2025.2 wheels).
+_MKL_SYCL_DLLS = [
+    "mkl_sycl_blas.5.dll",
+    "mkl_sycl_dft.5.dll",
+    "mkl_sycl_lapack.5.dll",
+    "mkl_sycl_rng.5.dll",
+    "mkl_sycl_sparse.5.dll",
+]
+
+# Keep the ctypes handles alive for the process lifetime (a plain LoadLibrary
+# in a dropped temp would let the loader unload the DLL and lose the pin).
+_PRELOADED = []
+
+
+def preload_oneapi_sycl_runtime(oneapi_bin: str) -> None:
+  """Load oneAPI's SYCL-stack DLLs before torch/warp can load the pip copies."""
+  dirs = [oneapi_bin]
+  mkl_bin = os.path.normpath(
+      os.path.join(os.path.dirname(oneapi_bin), "..", "mkl", "2025.3", "bin")
+  )
+  if os.path.isdir(mkl_bin):
+    dirs.append(mkl_bin)
+  for dll in _COMPILER_DLLS + _MKL_SYCL_DLLS:
+    for d in dirs:
+      p = os.path.join(d, dll)
+      if not os.path.exists(p):
+        continue
+      try:
+        _PRELOADED.append(ctypes.WinDLL(p))
+        break
+      except OSError:
+        pass  # optional component: leave the loader free to find another copy
 
 
 def configure_torch_threads(default: int = 2) -> None:
@@ -50,14 +110,19 @@ def prepare_sycl_runtime_path() -> None:
   )
   pip_bin = os.environ.get("WARP_SYCL_PIP_BIN", "")
   if not pip_bin:
+    # pip installs a wheel's data files relative to the PREFIX root, i.e.
+    # <venv>/Library/bin -- not under site-packages. Fall back to the old
+    # (site-packages-relative) probe for --prefix layouts like D:\py.
     for site in [p for p in sys.path if p.endswith("site-packages")]:
-      hits = sorted(glob.glob(os.path.join(site, "Library", "bin")))
+      prefix = os.path.dirname(os.path.dirname(site))  # <venv>/Lib/site-packages
+      hits = sorted(glob.glob(os.path.join(prefix, "Library", "bin")))
       if hits:
         pip_bin = hits[0]
         break
   if oneapi and os.path.isdir(oneapi):
     # prepend: warp's warpsycl.dll must resolve the oneAPI sycl8.dll
     os.environ["PATH"] = oneapi + os.pathsep + os.environ["PATH"]
+    preload_oneapi_sycl_runtime(oneapi)
   if pip_bin and os.path.isdir(pip_bin):
     # append: torch's other DLL dependencies (libuv etc.) as a fallback only
     os.environ["PATH"] = os.environ["PATH"] + os.pathsep + pip_bin
