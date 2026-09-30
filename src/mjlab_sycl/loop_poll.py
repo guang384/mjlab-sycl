@@ -65,6 +65,14 @@ def install_poll_batching() -> None:
     except ValueError:
       tail = 512
 
+    # Skip the initial drain: nsolving is initialized to nworld (host-side,
+    # via wp.full before capture_while is called), so the first poll always
+    # finds it > 0.  The init_context kernels and the first iteration's
+    # kernels are in the same SYCL queue and execute in order, so skipping
+    # the drain is safe — we just run the first batch unconditionally.
+    for _ in range(poll_every):
+      while_body(**kwargs)
+
     while True:
       # drain so the raw USM read below observes all kernels submitted so far
       wp.synchronize_device("sycl")
