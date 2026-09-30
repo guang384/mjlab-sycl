@@ -5,6 +5,17 @@ See the module docstring sections below for each kernel. Installed together
 with the SYCL simulation patch (runtime_patch.py); MJLAB_SYCL_FLAT_JTDAJ=0
 disables (historical name -- it gates all six rewrites: JTDAJ, contact_jac,
 and the four cholesky variants).
+
+Formulation notes (measured on Arc 130T @4096 envs):
+  - JTDAJ (h = qM + J^T D J) runs one work-item per OUTPUT ELEMENT with a
+    dot over constraints -- the same shape as upstream's
+    update_gradient_h_incremental, which measures ~10x faster per flop on
+    this iGPU than a per-tile read-modify-write of h (the tiles thrash
+    load/store ports re-reading the same rows for every constraint).
+  - The dense cholesky pair (factorize + solve, nv <= 32) runs one
+    work-item per world with fully unrolled row loops (static n via the
+    factory, max_unroll raised for this module) so the triangular dots
+    stay in registers instead of streaming L through memory each pass.
 """
 
 from __future__ import annotations
@@ -14,8 +25,10 @@ import os
 
 import warp as wp
 
-_TILE = 16  # upstream TILE_SIZE_JTDAJ_DENSE; nv_pad is only a multiple of 16
-# when nv > 32 (smaller dense models pad to 4), so edge tiles are clipped
+# n loops in the dense cholesky kernels run up to 32 (the upstream small-nv
+# path caps there); the warp default of 16 would leave them un-unrolled.
+wp.set_module_options({"max_unroll": 64})
+
 _QUADRATIC = 1  # mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC
 
 _KERNEL_CACHE = {}
@@ -23,7 +36,6 @@ _orig_launch_tiled = None
 
 
 def _make_flat_kernel(nv_pad: int):
-  nt = (nv_pad + _TILE - 1) // _TILE  # sub-tiles per axis; edge tiles are clipped
 
   @wp.kernel(enable_backward=False)
   def kernel(
@@ -35,28 +47,22 @@ def _make_flat_kernel(nv_pad: int):
     ctx_done_in: wp.array[bool],
     ctx_h_out: wp.array3d[float],
   ):
-    worldid, tile_id = wp.tid()
+    worldid, elemid = wp.tid()
 
     if ctx_done_in[worldid]:
       return
 
-    # (ti, tj) selects this work-item's (clipped) 16x16 sub-tile of the output
-    # matrix; the full (nt x nt) grid partitions h exactly, so no element is
-    # written by two work-items and no synchronization is needed. nv_pad is
-    # only padded to a multiple of 4 by mujoco_warp (dense path), so edge
-    # sub-tiles may be smaller than 16.
-    ti = tile_id // nt
-    tj = tile_id - ti * nt
-    r0 = ti * _TILE
-    c0 = tj * _TILE
-    rows = wp.min(_TILE, nv_pad - r0)
-    cols = wp.min(_TILE, nv_pad - c0)
+    # One work-item per output element of the nv_pad x nv_pad h matrix:
+    # h[i,j] = qM[i,j] + sum_k Dk' * J[k,i] * J[k,j] with Dk' zeroed for
+    # non-QUADRATIC constraints -- element-for-element the same expression
+    # (and accumulation order) as the tiled original. The dot-over-
+    # constraints shape is what upstream's own update_gradient_h_incremental
+    # uses; measured here at ~10x the flop rate of a per-tile read-modify-
+    # write of h. The grid partitions h exactly, so no synchronization.
+    i = elemid // nv_pad
+    j = elemid - i * nv_pad
 
-    for i in range(rows):
-      for j in range(cols):
-        h_out_val = qM_in[worldid, r0 + i, c0 + j]
-        ctx_h_out[worldid, r0 + i, c0 + j] = h_out_val
-
+    s = qM_in[worldid, i, j]
     n = nefc_in[worldid]
     for k in range(n):
       Dk = efc_D_in[worldid, k]
@@ -64,12 +70,8 @@ def _make_flat_kernel(nv_pad: int):
         Dk = 0.0
       if Dk == 0.0:
         continue
-
-      for i in range(rows):
-        Jik = efc_J_in[worldid, k, r0 + i] * Dk
-        for j in range(cols):
-          h_out_val = ctx_h_out[worldid, r0 + i, c0 + j] + Jik * efc_J_in[worldid, k, c0 + j]
-          ctx_h_out[worldid, r0 + i, c0 + j] = h_out_val
+      s = s + (efc_J_in[worldid, k, i] * Dk) * efc_J_in[worldid, k, j]
+    ctx_h_out[worldid, i, j] = s
 
   return kernel
 
@@ -142,6 +144,29 @@ def install() -> None:
       return k
 
     _solver.update_gradient_cholesky = _chol_factory_recorder
+
+    # Route the solver's factorize+solve through the flat kernel so the
+    # incremental path's skip_unchanged contract is honored for small nv:
+    # upstream only caches the factorization when nv > _BLOCK_CHOLESKY_DIM
+    # (it keeps a separate hfactor buffer there); below that every call
+    # re-factorized even with zero constraint-state changes. The scratch L
+    # and its per-world validity flag make the reuse free.
+    _orig_chol_solve = _solver._cholesky_factorize_solve
+    _block_dim = getattr(_solver, "_BLOCK_CHOLESKY_DIM", 32)
+
+    def _chol_solve_patched(m, d, ctx, skip_unchanged=False):
+      if not _enabled() or m.nv > _block_dim:
+        return _orig_chol_solve(m, d, ctx, skip_unchanged)
+      scratch, lvalid, ones = _chol_state(ctx.h)
+      changed = ctx.changed_efc_count if skip_unchanged else ones
+      wp.launch(
+        _get_chol_solve_kernel(m.nv),
+        dim=d.nworld,
+        inputs=[ctx.grad, ctx.h, ctx.done, changed, lvalid],
+        outputs=[scratch, lvalid, ctx.Mgrad],
+      )
+
+    _solver._cholesky_factorize_solve = _chol_solve_patched
   except Exception as e:
     print(f"[mjlab-sycl] solver-cholesky factory probe failed ({e!r}); nv falls back to grad shape")
 
@@ -203,29 +228,31 @@ def install() -> None:
       inputs = kwargs["inputs"]
       outputs = kwargs["outputs"]
       h = inputs[1]
-      # n MUST be the real nv: ctx.h AND ctx.grad are both allocated at
-      # nv_pad, whose padded rows are ZERO — factorizing them yields
-      # sqrt(0) diagonals, then 0/0 = NaN into Mgrad -> search -> qacc
-      # (the cartpole/go1 NaN; microduck survived only because nv=20 is a
-      # multiple of 4, so nv_pad == nv). The tiled original compiles
-      # TILE_SIZE = m.nv (the factory argument) — the only unpadded source.
-      # install() wraps the factory to record it per kernel object.
+      # n MUST be the real nv (see _make_cholesky_solve_kernel). The tiled
+      # original compiles TILE_SIZE = m.nv (the factory argument) — the only
+      # unpadded source; install() wraps the factory to record it per kernel
+      # object. Launching the upstream kernel directly bypasses the solver's
+      # skip_unchanged routing, so force the factorize via the ones array.
       n = _SOLVER_CHOL_NV.get(id(kernel), inputs[0].shape[1])
-      scratch = wp.empty_like(h)
+      scratch, lvalid, ones = _chol_state(h)
       return wp.launch(
-        _cholesky_solve_flat,
+        _get_chol_solve_kernel(n),
         dim=nworld_from(kwargs),
-        inputs=[inputs[0], h, inputs[2], n],
-        outputs=[scratch, outputs[0]],
+        inputs=[inputs[0], h, inputs[2], ones, lvalid],
+        outputs=[scratch, lvalid, outputs[0]],
         device=kwargs.get("device"),
       )
     if key == "_tile_cholesky_factorize_solve__locals__cholesky_factorize_solve" and _enabled():
       adr = kwargs["inputs"][2]
       n = _adr_tile_size(adr, kwargs["outputs"][0].shape[1])
+      nworld = nworld_from(kwargs)
       return wp.launch(
-        _cholesky_factorize_solve_flat,
-        dim=nworld_from(kwargs),
-        inputs=kwargs["inputs"] + [n],
+        _get_chol_fs_kernel(n),
+        # one work-item per (world, tile): a bare nworld dim left nodeid
+        # pinned at 0, silently skipping every tile after the first on
+        # multi-tile models (fine for single-tile nv<=32 qM sets only)
+        dim=(nworld, adr.shape[0]),
+        inputs=kwargs["inputs"],
         outputs=kwargs["outputs"],
         device=kwargs.get("device"),
       )
@@ -237,10 +264,9 @@ def install() -> None:
       nworld = kwargs["dim"]
       if isinstance(nworld, (tuple, list)):
         nworld = nworld[0]
-      nt = (nv_pad + _TILE - 1) // _TILE
       return wp.launch(
         _get_kernel(nv_pad),
-        dim=(nworld, nt * nt),
+        dim=(nworld, nv_pad * nv_pad),
         inputs=inputs,
         outputs=outputs,
         device=kwargs.get("device"),
@@ -249,7 +275,8 @@ def install() -> None:
 
   _orig_launch_tiled = wp.launch_tiled
   wp.launch_tiled = patched_launch_tiled
-  print("[sycl-flat] flat replacements installed: JTDAJ + contact_jac + 4 cholesky (MJLAB_SYCL_FLAT_JTDAJ=0 to disable)")
+  print("[sycl-flat] flat replacements installed: JTDAJ + contact_jac + cholesky pair "
+        "(MJLAB_SYCL_FLAT_JTDAJ=0 to disable)")
 
 
 # ---------------------------------------------------------------------------
@@ -452,83 +479,145 @@ def _contact_flat_for(kernel_obj):
 # _tile_cholesky_factorize_solve (smooth, per qM tile). For nv=20 both are
 # tiny dense factorizations whose cost is pure tile machinery; the flat
 # versions run one work-item per (world[, tile]) with scalar row-by-row
-# LLT + in-place forward/back substitution on the output buffer.
+# LLT + in-place forward/back substitution on the output buffer. n is
+# closed over at kernel-build time so the row loops unroll and the
+# triangular dots stay in registers.
 # ---------------------------------------------------------------------------
 
-@wp.kernel(enable_backward=False)
-def _cholesky_solve_flat(
-  ctx_grad_in: wp.array2d[float],
-  h_in: wp.array3d[float],
-  ctx_done_in: wp.array[bool],
-  n: int,
-  L_out: wp.array3d[float],
-  ctx_Mgrad_out: wp.array2d[float],
-):
-  worldid = wp.tid()
-  if ctx_done_in[worldid]:
-    return
-
-  # row-by-row LLT into the scratch buffer
-  for i in range(n):
-    for j in range(i + 1):
-      s = h_in[worldid, i, j]
-      for k in range(j):
-        s = s - L_out[worldid, i, k] * L_out[worldid, j, k]
-      if i == j:
-        L_out[worldid, i, j] = wp.sqrt(s)
-      else:
-        L_out[worldid, i, j] = s / L_out[worldid, j, j]
-
-  # forward substitution in-place on the output (y = L^-1 g)
-  for i in range(n):
-    s = ctx_grad_in[worldid, i]
-    for k in range(i):
-      s = s - L_out[worldid, i, k] * ctx_Mgrad_out[worldid, k]
-    ctx_Mgrad_out[worldid, i] = s / L_out[worldid, i, i]
-
-  # back substitution (x = L^-T y)
-  for i in range(n):
-    ii = n - 1 - i
-    s = ctx_Mgrad_out[worldid, ii]
-    for k in range(n - 1 - ii):
-      kk = n - 1 - k
-      s = s - L_out[worldid, kk, ii] * ctx_Mgrad_out[worldid, kk]
-    ctx_Mgrad_out[worldid, ii] = s / L_out[worldid, ii, ii]
+_CHOL_SOLVE_KERNELS = {}  # n -> solver kernel
+_CHOL_FS_KERNELS = {}  # n -> smooth set-const factorize+solve kernel
+# Per-h factorization state: the scratch L buffer outlives the call (the
+# solver re-factorizes the same h across iterations), so with a per-world
+# "L is valid" flag the incremental path can skip the LLT when no constraint
+# state changed since the last factorization. Keyed on h.ptr with an id()
+# liveness check against Python recycling, same as _ADR_SIZE_CACHE.
+_CHOL_STATE = {}  # h.ptr -> (scratch L, lvalid, forced-changed ones, id(h))
 
 
-@wp.kernel(enable_backward=False)
-def _cholesky_factorize_solve_flat(
-  M_in: wp.array3d[float],
-  y_in: wp.array2d[float],
-  adr_in: wp.array[int],
-  n: int,
-  x_out: wp.array2d[float],
-  L_out: wp.array3d[float],
-):
-  worldid, nodeid = wp.tid()
-  off = adr_in[nodeid]
+def _chol_state(h):
+  key = h.ptr
+  cached = _CHOL_STATE.get(key)
+  if cached is not None and cached[3] == id(h):
+    return cached[0], cached[1], cached[2]
+  scratch = wp.empty_like(h)
+  lvalid = wp.zeros((h.shape[0],), dtype=bool, device=h.device)
+  ones = wp.ones((h.shape[0],), dtype=int, device=h.device)
+  _CHOL_STATE[key] = (scratch, lvalid, ones, id(h))
+  return scratch, lvalid, ones
 
-  for i in range(n):
-    for j in range(i + 1):
-      s = M_in[worldid, off + i, off + j]
-      for k in range(j):
-        s = s - L_out[worldid, off + i, off + k] * L_out[worldid, off + j, off + k]
-      if i == j:
-        L_out[worldid, off + i, off + j] = wp.sqrt(s)
-      else:
-        L_out[worldid, off + i, off + j] = s / L_out[worldid, off + j, off + j]
 
-  for i in range(n):
-    s = y_in[worldid, off + i]
-    for k in range(i):
-      s = s - L_out[worldid, off + i, off + k] * x_out[worldid, off + k]
-    x_out[worldid, off + i] = s / L_out[worldid, off + i, off + i]
+def _make_cholesky_solve_kernel(n: int):
+  """Dense LLT of ctx.h + solve for Mgrad, one work-item per world.
 
-  for i in range(n):
-    ii = n - 1 - i
-    s = x_out[worldid, off + ii]
-    for k in range(n - 1 - ii):
-      kk = n - 1 - k
-      s = s - L_out[worldid, off + kk, off + ii] * x_out[worldid, off + kk]
-    x_out[worldid, off + ii] = s / L_out[worldid, off + ii, off + ii]
+  n is the REAL nv: ctx.h and ctx.grad are both allocated at nv_pad, whose
+  padded rows can hold garbage -- factorizing them yields sqrt(0) diagonals,
+  then 0/0 = NaN into Mgrad -> search -> qacc (the cartpole NaN; microduck
+  survived only because nv=20 is a multiple of 4, so nv_pad == nv).
+
+  The LLT is skipped per world when ``changed_in[w] == 0`` and L is already
+  valid in the scratch buffer -- the skip_unchanged contract of the
+  solver's incremental gradient path (upstream only honors it for nv > 32,
+  where it keeps a separate hfactor cache).
+  """
+
+  @wp.kernel(enable_backward=False)
+  def kernel(
+    ctx_grad_in: wp.array2d[float],
+    h_in: wp.array3d[float],
+    ctx_done_in: wp.array[bool],
+    changed_in: wp.array[int],
+    lvalid_in: wp.array[bool],
+    L_out: wp.array3d[float],
+    lvalid_out: wp.array[bool],
+    ctx_Mgrad_out: wp.array2d[float],
+  ):
+    worldid = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+
+    if changed_in[worldid] != 0 or not lvalid_in[worldid]:
+      # row-by-row LLT into the scratch buffer
+      for i in range(n):
+        for j in range(i + 1):
+          s = h_in[worldid, i, j]
+          for k in range(j):
+            s = s - L_out[worldid, i, k] * L_out[worldid, j, k]
+          if i == j:
+            L_out[worldid, i, j] = wp.sqrt(s)
+          else:
+            L_out[worldid, i, j] = s / L_out[worldid, j, j]
+      lvalid_out[worldid] = True
+
+    # forward substitution in-place on the output (y = L^-1 g)
+    for i in range(n):
+      s = ctx_grad_in[worldid, i]
+      for k in range(i):
+        s = s - L_out[worldid, i, k] * ctx_Mgrad_out[worldid, k]
+      ctx_Mgrad_out[worldid, i] = s / L_out[worldid, i, i]
+
+    # back substitution (x = L^-T y)
+    for i in range(n):
+      ii = n - 1 - i
+      s = ctx_Mgrad_out[worldid, ii]
+      for k in range(n - 1 - ii):
+        kk = n - 1 - k
+        s = s - L_out[worldid, kk, ii] * ctx_Mgrad_out[worldid, kk]
+      ctx_Mgrad_out[worldid, ii] = s / L_out[worldid, ii, ii]
+
+  return kernel
+
+
+def _get_chol_solve_kernel(n: int):
+  k = _CHOL_SOLVE_KERNELS.get(n)
+  if k is None:
+    k = _make_cholesky_solve_kernel(n)
+    _CHOL_SOLVE_KERNELS[n] = k
+  return k
+
+
+def _make_cholesky_factorize_solve_kernel(n: int):
+  @wp.kernel(enable_backward=False)
+  def kernel(
+    M_in: wp.array3d[float],
+    y_in: wp.array2d[float],
+    adr_in: wp.array[int],
+    x_out: wp.array2d[float],
+    L_out: wp.array3d[float],
+  ):
+    worldid, nodeid = wp.tid()
+    off = adr_in[nodeid]
+
+    for i in range(n):
+      for j in range(i + 1):
+        s = M_in[worldid, off + i, off + j]
+        for k in range(j):
+          s = s - L_out[worldid, off + i, off + k] * L_out[worldid, off + j, off + k]
+        if i == j:
+          L_out[worldid, off + i, off + j] = wp.sqrt(s)
+        else:
+          L_out[worldid, off + i, off + j] = s / L_out[worldid, off + j, off + j]
+
+    for i in range(n):
+      s = y_in[worldid, off + i]
+      for k in range(i):
+        s = s - L_out[worldid, off + i, off + k] * x_out[worldid, off + k]
+      x_out[worldid, off + i] = s / L_out[worldid, off + i, off + i]
+
+    for i in range(n):
+      ii = n - 1 - i
+      s = x_out[worldid, off + ii]
+      for k in range(n - 1 - ii):
+        kk = n - 1 - k
+        s = s - L_out[worldid, off + kk, off + ii] * x_out[worldid, off + kk]
+      x_out[worldid, off + ii] = s / L_out[worldid, off + ii, off + ii]
+
+  return kernel
+
+
+def _get_chol_fs_kernel(n: int):
+  k = _CHOL_FS_KERNELS.get(n)
+  if k is None:
+    k = _make_cholesky_factorize_solve_kernel(n)
+    _CHOL_FS_KERNELS[n] = k
+  return k
 
