@@ -32,6 +32,7 @@ import sys
 # sycl8.dll PATH ordering -- must run before torch/warp come up (see
 # _bootstrap); the torch-XPU check below imports torch.
 from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
+from mjlab_sycl.install import WARP_VERSION
 
 prepare_sycl_runtime_path()
 
@@ -56,14 +57,6 @@ def _find_oneapi_bin() -> str | None:
     hits = sorted(glob.glob(os.path.join(root, "compiler", "*", "bin")))
     if hits:
       return hits[-1]  # newest compiler version
-  return None
-
-
-def _find_pip_sycl_bin() -> str | None:
-  for site in [p for p in sys.path if p.endswith("site-packages")]:
-    hits = sorted(glob.glob(os.path.join(site, "Library", "bin")))
-    if hits:
-      return hits[0]
   return None
 
 
@@ -121,9 +114,9 @@ def main() -> None:
 
   ok_all &= _check(
     "warp version",
-    wp.__version__ == "1.12.0",
+    wp.__version__ == WARP_VERSION,
     wp.__version__,
-    "the vendored SYCL backend targets warp 1.12.0 (warp-lang==1.12.0 in pyproject)",
+    f"the vendored SYCL backend targets warp {WARP_VERSION} (warp-lang=={WARP_VERSION} in pyproject)",
   )
 
   # 3. overlay sync -------------------------------------------------------------

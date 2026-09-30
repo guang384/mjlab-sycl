@@ -21,8 +21,8 @@ stop launching more iterations*. Iterations launched after a world converged
 are guarded no-ops (every solver body kernel early-returns on ``ctx.done``;
 ``solve_done`` increments ``solver_niter`` and decrements ``nsolving`` only on
 the not-done path), so stopping later changes nothing but the number of
-no-op launches. Enabled with ``MJLAB_SYCL_POLL_EVERY=N`` (default off -> the
-original per-iteration polling runs untouched); ``MJLAB_SYCL_POLL_TAIL``
+no-op launches. Enabled with ``MJLAB_SYCL_POLL_EVERY=N`` (default 8, set by
+runtime_patch.py); ``MJLAB_SYCL_POLL_TAIL``
 (default 512) sets the remaining-worlds threshold below which polling reverts
 to every iteration.
 """
@@ -59,7 +59,10 @@ def install_poll_batching() -> None:
     if not is_sycl or not poll_every_raw:
       return _orig(condition, while_body, stream=stream, **kwargs)
 
-    poll_every = max(1, int(poll_every_raw))
+    try:
+      poll_every = max(1, int(poll_every_raw))
+    except ValueError:
+      poll_every = 8  # sane default if env var is garbage
     try:
       tail = max(1, int(os.environ.get("MJLAB_SYCL_POLL_TAIL", "512")))
     except ValueError:

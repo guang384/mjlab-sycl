@@ -230,10 +230,13 @@ def _cached_launch(
   ndim = _normalize_dim(dim)
 
   # Build the cache key.  wp.array objects hash by identity (default object
-  # hash); int/float scalars hash by value.  A TypeError here means some arg
-  # is unhashable (e.g. a list) — fall back to the original path.
+  # hash); int/float scalars hash by value.  Include device and block_dim
+  # so that the same kernel launched on different devices or with different
+  # block dimensions does not cross-contaminate cached entries.
+  # record_tape launches are excluded from the cache entirely (the _build
+  # path returns early when tape is active), so we don't need it in the key.
   try:
-    key = (kernel, fwd_args, ndim)
+    key = (kernel, fwd_args, ndim, device, block_dim)
     cached = _cache.get(key)
   except TypeError:
     return _orig_launch(
@@ -289,7 +292,7 @@ def _cached_launch(
         max_blocks,
         block_dim,
       )
-      _build_cache_entry(kernel, ndim, fwd_args, device, key)
+      _build_cache_entry(kernel, ndim, fwd_args, device, block_dim, key)
       return
     # Same fingerprint but the original objects died: recycled ids, not a
     # recurrence.  Refresh the stored weakrefs and stay on the slow path.
@@ -338,7 +341,7 @@ def _cached_launch(
   )
 
 
-def _build_cache_entry(kernel, ndim, fwd_args, device, key) -> None:
+def _build_cache_entry(kernel, ndim, fwd_args, device, block_dim, key) -> None:
   """Reconstruct the packed-args struct from the (already launched) call.
 
   Best-effort: any failure just means this launch keeps using the slow path.

@@ -18,7 +18,6 @@ import numpy as np
 import warp as wp
 
 _ORIG = None
-_ORIG_RECOMPUTE = None
 _ORIG_EVENT_APPLY = None
 _RECOMPUTE_ENV_IDS = None  # set by patched event_manager.apply before recompute
 _J = {}  # (nworld, nv, dev) → scratch wp.array2d[float]
@@ -246,7 +245,7 @@ def _set_const_0_loops_fused(
 # ---------------------------------------------------------------------------
 
 def install() -> None:
-    global _ORIG, _ORIG_RECOMPUTE, _ORIG_EVENT_APPLY
+    global _ORIG, _ORIG_EVENT_APPLY
     if _ORIG is not None:
         return
     from mujoco_warp._src import io as _io

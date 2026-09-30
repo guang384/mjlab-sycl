@@ -13,8 +13,11 @@ parity):
     test_overlay (host-only) + test_e2e/test_mujoco: verification gates
     (mjlab-sycl-test)
 
-The bundled entries wire the patch themselves; importing this package does
-nothing.
+The bundled entries (train, bench, train_viewer, etc.) call
+``prepare_sycl_runtime_path()`` and ``patch_simulation_for_sycl()`` themselves;
+users should call those functions explicitly rather than relying on import
+side effects.  This module re-exports ``patch_simulation_for_sycl`` for
+convenience.
 """
 
 from mjlab_sycl.runtime_patch import patch_simulation_for_sycl

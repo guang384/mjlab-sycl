@@ -94,7 +94,7 @@ def _enabled() -> bool:
 
 
 
-_ADR_SIZE_CACHE = {}  # id(adr array) -> tile size (TileSet: uniform across tiles)
+_ADR_SIZE_CACHE = {}  # adr.ptr -> (tile size, adr id for liveness check)
 _SOLVER_CHOL_NV = {}  # id(kernel) -> nv (recorded by the factory wrap at install)
 
 
@@ -103,13 +103,22 @@ def _adr_tile_size(adr, unpadded_dim):
   addresses. A single-tile set spans the UNPADDED matrix dimension (callers
   must pass nv -- the qM/qLD buffers are padded and their garbage rows would
   poison a Cholesky factorization sized to the padded end; that was the
-  cartpole NaN: qM padded 4x4, tile actually 2x2)."""
+  cartpole NaN: qM padded 4x4, tile actually 2x2).
+
+  The cache is keyed by ``adr.ptr`` (a stable pointer value), but we also
+  store ``id(adr)`` to detect Python-side object recycling: if the id
+  changed since we cached, the array was garbage-collected and a new one
+  may reuse the pointer with different contents, so we recompute."""
   key = adr.ptr
-  size = _ADR_SIZE_CACHE.get(key)
-  if size is None:
-    a = adr.numpy()
-    size = int(a[1] - a[0]) if len(a) > 1 else int(unpadded_dim)
-    _ADR_SIZE_CACHE[key] = size
+  cached = _ADR_SIZE_CACHE.get(key)
+  if cached is not None:
+    size, saved_id = cached
+    if saved_id == id(adr):
+      return size  # cache hit, same object
+  # recompute (cache miss or recycled id)
+  a = adr.numpy()
+  size = int(a[1] - a[0]) if len(a) > 1 else int(unpadded_dim)
+  _ADR_SIZE_CACHE[key] = (size, id(adr))
   return size
 
 

@@ -73,24 +73,27 @@ def _solver_tail_fused(
     if ctx_done_in[worldid]:
         return
 
-    # ── 1. prev_grad_Mgrad ────────────────────────────────────────────────
-    for dofid in range(nv):
-        ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
-        ctx_prev_Mgrad_out[worldid, dofid] = ctx_Mgrad_in[worldid, dofid]
-
-    # ── 2. beta (CG only) ─────────────────────────────────────────────────
+    # ── 1. beta (CG only) — MUST read prev_grad/Mgrad BEFORE overwriting ──
+    # The previous iteration stored its grad/Mgrad into prev_grad_out/
+    # prev_Mgrad_out.  We read those OLD values here, then overwrite below.
     beta = 0.0
     if opt_solver == _SOLVER_CG:
         beta_num = float(0.0)
         beta_den = float(0.0)
         for dofid in range(nv):
-            prev_Mgrad = ctx_prev_Mgrad_out[worldid, dofid]
+            prev_g = ctx_prev_grad_out[worldid, dofid]
+            prev_Mg = ctx_prev_Mgrad_out[worldid, dofid]
             beta_num += ctx_grad_in[worldid, dofid] * (
-                ctx_Mgrad_in[worldid, dofid] - prev_Mgrad
+                ctx_Mgrad_in[worldid, dofid] - prev_Mg
             )
-            beta_den += ctx_prev_grad_out[worldid, dofid] * prev_Mgrad
+            beta_den += prev_g * prev_Mg
         beta = wp.max(0.0, beta_num / wp.max(1e-14, beta_den))
     ctx_beta_out[worldid] = beta
+
+    # ── 2. Save current grad/Mgrad as prev for next iteration ────────────
+    for dofid in range(nv):
+        ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
+        ctx_prev_Mgrad_out[worldid, dofid] = ctx_Mgrad_in[worldid, dofid]
 
     # ── 3. zero_search_dot ────────────────────────────────────────────────
     ctx_search_dot_out[worldid] = 0.0

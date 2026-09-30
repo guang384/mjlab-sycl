@@ -18,7 +18,11 @@ meaningless — 1e-7 seed noise amplifies to O(10) qacc error by step 8).
 import os
 import sys
 
-sys.path.insert(0, r"D:\mjlab-sycl\src")
+# Ensure the package is importable when run directly (e.g. python -m mjlab_sycl.test_fused_ab
+# from the repo root); if already installed in the venv, this is a no-op.
+_repo_src = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "src")
+if os.path.isdir(_repo_src) and _repo_src not in sys.path:
+    sys.path.insert(0, _repo_src)
 
 from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
 

@@ -172,9 +172,7 @@ def patch_simulation_for_sycl() -> None:
   orig_sc_init = sc_mod.SensorContext.__init__
 
   def sc_init(self, mj_model, model, data, camera_sensors, raycast_sensors, device):
-    import os
-
-    sc_dev = "cpu" if os.environ.get("BENCH_SC_CPU") else "sycl"
+    sc_dev = "cpu" if os.environ.get("MJLAB_SYCL_SC_CPU") else "sycl"
     orig_sc_init(
       self, mj_model, model, data, camera_sensors, raycast_sensors, sc_dev
     )
@@ -242,14 +240,9 @@ def patch_simulation_for_sycl() -> None:
   sim_mod.Simulation.reset = drained(orig_reset)
   sim_mod.Simulation.sense = drained(orig_sense)
   sim_mod.Simulation.recompute_constants = drained(orig_recompute)
-  # NOTE: forward is set AFTER this block — the lite_forward assignment
-  # (line 163) must NOT be overwritten by a blanket drained(orig_forward).
-
-  if _lite_forward:
-    sim_mod.Simulation.forward = lite_forward
-    # already printed above
-  else:
-    sim_mod.Simulation.forward = drained(orig_forward)
+  # forward is already set above (lite_forward at line 163, or drained at 167).
+  # Do NOT re-assign here — a blanket drained(orig_forward) would overwrite
+  # the lite_forward that skips the solver in the final forward call.
 
   # barrier-free flat rewrites of the hottest tiled kernels
   flat_kernels.install()
@@ -285,7 +278,7 @@ def patch_simulation_for_sycl() -> None:
   # per-world work and lose parallelism).  Enable explicitly on CPU with
   #   MJLAB_SYCL_FUSED_SET_CONST=1 / MJLAB_SYCL_FUSED_SOLVER_TAIL=1
   # (auto-enabled when the sim device is CPU, not sycl).
-  _is_cpu_sim = os.environ.get("MJLAB_SYCL_SIM_DEVICE", "sycl") == "cpu"
+  _is_cpu_sim = os.environ.get("MJLAB_SYCL_SIM_DEVICE", "sycl").strip().lower() == "cpu"
   if _is_cpu_sim or os.environ.get("MJLAB_SYCL_FUSED_SET_CONST", "").strip().lower() in ("1", "true", "on"):
     from mjlab_sycl import fused_set_const
     fused_set_const.install()
