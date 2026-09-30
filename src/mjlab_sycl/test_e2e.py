@@ -7,7 +7,7 @@ with oneAPI and MSVC Build Tools available.
 
 Usage:
     python -m mjlab_sycl.test_e2e       # this gate alone
-    mjlab-sycl-test                     # both gates, in order
+    mjlab-sycl-test                     # all three gates: overlay, e2e, mujoco
 
 Checks, in order:
   1. the 'sycl' device is registered and reports the Intel GPU

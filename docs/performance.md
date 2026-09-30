@@ -26,8 +26,9 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 
 | config (4096 envs unless noted) | per-iteration wall | env-steps/s |
 |---|---|---|
+| sycl, PPO on **xpu** (default), post-fusion refresh (2026-09-30, 3 runs) | mean 10.2 – 17.1 s (run-to-run clock variance) | 6,301 – 10,782 |
 | sycl, PPO on **cpu** | 23.7 s (rollout 19.1 / ppo 4.5) | 5,140 |
-| sycl, PPO on **xpu** (default) | **19.2 s** (rollout 17.9 / ppo 1.2) | 5,485 |
+| sycl, PPO on **xpu** (default) — 2026-09-08 archive | **19.2 s** (rollout 17.9 / ppo 1.2) | 5,485 |
 | sycl, 8192 envs, PPO xpu | 37.3 s | 5,634 (+2.7 %) |
 | **pure warp-CPU device** (1024 envs) | 100.2 s | 246 |
 | sycl (1024 envs) | 7.6 s | 3,436 |
@@ -37,9 +38,22 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 - Env-count scaling is flat beyond ~4096 (device saturated; doubling envs doubles
   per-step wall -> same samples/s).
 
-## Where the ~670 ms/env.step @4096 goes (census)
+## Where env.step goes (census)
 
-- sim:step x4 ~454 ms + env-level forward ~111 ms (5 full Newton solves/step)
+Current (launch-fusion suite + default-on polling, measured 2026-09-30,
+4096 envs):
+
+- median ≈ 330 ms/env.step (40-step runs, 5 warmup; run-to-run spread
+  ±15 ms depending on system state)
+- ~938 kernel launches/step (was ~1,600 before the fusion suite)
+- 7 queue drains/step: 4 solve-end convergence polls + lite forward +
+  Bvh refit + sensor finalize; ~7-8 % of wall waiting in drains
+
+Historical (2026-09-08 baseline, before the fusion suite and poll
+default — kept for attribution):
+
+- ~670 ms/env.step: sim:step x4 ~454 ms + env-level forward ~111 ms
+  (5 full Newton solves/step — the lite forward was clobbered then)
 - ~1,600 kernel launches/step; host submit ~300 ms/step (overlaps device)
 - ~62 queue drains/step (~55 are the capture-while convergence polls),
   ~230 ms/step waiting on real device work
@@ -51,7 +65,10 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 |---|---|---|
 | PPO on torch.xpu | 4.5 -> 1.2 s/iter | kept (default) |
 | torch CPU threads cap (MJLAB_TORCH_THREADS=2) | CPU 4.6 -> 1.9 cores, wall unchanged (~670 ms/step) | kept (default) |
-| batched convergence polling (MJLAB_SYCL_POLL_EVERY) | 716 vs 671 ms/step (guard no-op iterations cost more than the polls saved) | dead end, kept off |
+| batched convergence polling — small cadence (poll < iteration cap) | 716 vs 671 ms/step: the extra guard no-op iterations cost more than the polls saved | dead end |
+| batched convergence polling — cadence = iteration cap (poll_every=8) | 1 poll/solve instead of every iteration; with the lite-forward restore, env.step 370 -> 306 ms (−17 %) | kept (default-on) |
+| launch cache + tree/solver/linesearch fusion + 0-dim launch skip | 1,600 -> 938 launches/step (−35 %), part of 670 -> ~330 ms/step | kept (default-on, `MJLAB_SYCL_*` kill switches) |
+| sense() drain merge (sensor context already drains in finalize) | 8 -> 7 drains/step, no measurable wall change | kept |
 | kernel args by-value capture (codegen) | ~1 % (noise); DPC++ also requires const kernel lambdas | dead end, reverted |
 | 8192 envs | +2.7 % | not worth wall 2x |
 | solver micro-kernel fusion (Route C) | infeasible here: fusion points need intra-world sync (barriers) which must never be added on the iGPU; only tiny per-world scalar merges remain (~1-2 %) | not viable, documented |

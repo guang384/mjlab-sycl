@@ -21,4 +21,4 @@ the backend.
 ## Verify after rebuild
 
     python -m mjlab_sycl install        # overlays the rebuilt backend, verifies the device
-    mjlab-sycl-test                     # both gates: backend e2e, then mujoco_warp vs cpu
+    mjlab-sycl-test                     # all gates: overlay sync, backend e2e, mujoco_warp vs cpu

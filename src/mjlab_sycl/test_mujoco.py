@@ -10,7 +10,7 @@ Requires `python -m mjlab_sycl install` to have been run in this environment.
 
 Usage:
     python -m mjlab_sycl.test_mujoco    # this gate alone
-    mjlab-sycl-test                     # both gates, in order
+    mjlab-sycl-test                     # all three gates: overlay, e2e, mujoco
 
 Checks:
   1. put_model / put_data succeed on the sycl device

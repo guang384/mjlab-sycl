@@ -26,9 +26,10 @@ footguns).
 - Windows, Python 3.12
 - Intel Arc iGPU (developed on Arc 130T / Lunar Lake)
 - mjlab 1.3.0, mujoco-warp, warp-lang 1.12.0, torch 2.9.1 (pinned in the package)
-- Intel oneAPI 2025.x compiler runtime; default location
-  `C:/Program Files (x86)/Intel/oneAPI/compiler/2025.3/bin` — the major version
-  must match the one `warpsycl.dll` was built with
+- Intel oneAPI 2025.x compiler runtime, at least as new as 2025.3 (the
+  version `warpsycl.dll` was built with). Auto-discovered as the newest
+  `compiler/<ver>/bin` under `C:/Program Files (x86)/Intel/oneAPI` or
+  `C:/Program Files/Intel/oneAPI`; override with `WARP_SYCL_ONEAPI_BIN`
 
 ## Install
 
@@ -48,15 +49,14 @@ stale or uv-sync-wiped overlay aborts with the remediation instead of a
 cryptic missing-device error or silently corrupt physics.
 
 **Console scripts.** `mjlab-sycl-train/-bench/-test` are only created when the
-package is installed *into the venv* — a global `pip config` `target=` (as on
-this machine) redirects the install into a shared directory that receives no
-scripts. Install from the local clone with the redirect bypassed so the
+package is installed *into the venv* — a global `pip config` `target=`
+redirects the install into a shared directory that receives no scripts.
+Install from the local clone with the redirect bypassed so the
 scripts land in `.venv\Scripts\`:
 
     cd <path-to-mjlab-sycl>         # the local clone
-    # This machine's pip config file sits behind a PIP_CONFIG_FILE env var, and
-    # --isolated CANNOT bypass an env-pointed config file (verified the hard
-    # way) -- clear it first (PowerShell):
+    # A pip config file pointed at by PIP_CONFIG_FILE cannot be bypassed by
+    # --isolated -- clear the env vars first (PowerShell):
     #   Remove-Item Env:PIP_CONFIG_FILE, Env:PIP_TARGET -ErrorAction SilentlyContinue
     <project>\.venv\Scripts\python.exe -m pip install --isolated --no-deps -e .
     # or: uv pip install --python <project>\.venv\Scripts\python.exe --no-deps -e .
@@ -87,7 +87,7 @@ whole setup is one command (the script below is exactly the manual recipe
 that follows, with the pip-config-env-var trap already handled):
 
     cd <path-to-mjlab-sycl>
-    .\scripts\setup_microduck.ps1 -Repo C:\dev\microduck_rl        # + -InstallTorchXpu on a new machine
+    .\scripts\setup_microduck.ps1 -Repo <path-to-microduck_rl>     # + -InstallTorchXpu on a new machine
 
 Manual equivalent:
 
@@ -96,7 +96,7 @@ Manual equivalent:
     uv sync
 
     # 2. this package, installed INTO the venv so its console scripts land in
-    #    .venv\Scripts\ (clear the pip-config env vars first on this machine)
+    #    .venv\Scripts\ (clear the pip-config env vars first if set)
     #    Remove-Item Env:PIP_CONFIG_FILE, Env:PIP_TARGET -ErrorAction SilentlyContinue
     cd <path-to-mjlab-sycl>
     ..\microduck_rl\.venv\Scripts\python.exe -m pip install --isolated --no-deps -e .
@@ -176,12 +176,27 @@ is the only reliable detector.
 
 | var | default | role |
 |---|---|---|
-| `WARP_SYCL_ONEAPI_BIN` | `C:/Program Files (x86)/Intel/oneAPI/compiler/2025.3/bin` | oneAPI bin dir prepended to PATH before torch/warp import |
+| `WARP_SYCL_ONEAPI_BIN` | auto: newest `compiler/<ver>/bin` under `C:/Program Files (x86)/Intel/oneAPI` (then `C:/Program Files/Intel/oneAPI`) | oneAPI bin dir prepended to PATH before torch/warp import |
 | `WARP_SYCL_PIP_BIN` | auto-detected from site-packages `Library/bin` | torch's pip SYCL runtime dir, appended so its older `sycl8.dll` can never shadow oneAPI's |
-| `MJLAB_SYCL_FLAT_JTDAJ` | `1` | kill switch for the flat JTDAJ kernel rewrite |
 | `WARP_SYCL_SHARED_KB` | 16 (`WP_MAX_SYCL_SHARED` in tile.h) | tile SLM arena size baked in at kernel-build time |
 | `WARP_SYCL_SYNC_TIMEOUT_S` | 180 (0 disables) | in-process GPU watchdog; a hung kernel aborts and names the culprit |
-| `MJLAB_PPO_DEVICE` | `cpu` | torch device used by `bench` |
+| `MJLAB_SYCL_SIM_DEVICE` | `sycl` | warp device for the Simulation; `cpu` runs physics on the CPU device and auto-enables the CPU-sim fused kernels |
+| `MJLAB_SYCL_LITE_FORWARD` | `1` | final `sim.forward()` skips the solver (obs/reward read kinematics + contacts only) |
+| `MJLAB_SYCL_NJMAX` | auto | solver constraint capacity: auto = max(measured nefc x 16, nq x 8, 96), only ever reduces the cfg value; `N` forces; `0` disables |
+| `MJLAB_SYCL_ITER` | auto | solver iteration cap: auto caps the cfg value at 8; `N` forces |
+| `MJLAB_SYCL_LS_ITER` | auto | line-search step cap: auto caps the cfg value at 10; `N` forces |
+| `MJLAB_SYCL_POLL_EVERY` | `8` | solver convergence polls: loop iterations between host-side checks (`1` = every iteration) |
+| `MJLAB_SYCL_POLL_TAIL` | `512` | below this many worlds still solving, polling reverts to every iteration |
+| `MJLAB_SYCL_SKIP_EMPTY` | `1` | skip 0-grid launches (tendons/flex/equality the model doesn't have) |
+| `MJLAB_SYCL_LAUNCH_CACHE` | `1` | cache repeated `(kernel, args, dim)` host-side launches |
+| `MJLAB_SYCL_FUSED_SOLVER` | `1` | fold the per-iteration zero/rotate kernels into the linesearch jaref tail |
+| `MJLAB_SYCL_FUSED_LINESEARCH` | `1` | fuse the linesearch teardown and mv+jv launches |
+| `MJLAB_SYCL_FUSED_TREE` | `1` | one launch per kinematic chain instead of one per depth level |
+| `MJLAB_SYCL_FLAT_JTDAJ` | `1` | kill switch for every flat kernel rewrite (JTDAJ, contact jac, 4 cholesky) |
+| `MJLAB_SYCL_FUSED_SET_CONST` | off | CPU-sim only: fuse the set-const model loops; auto-on when `MJLAB_SYCL_SIM_DEVICE=cpu` |
+| `MJLAB_SYCL_FUSED_SOLVER_TAIL` | off | CPU-sim only: fuse the solver tail; auto-on when `MJLAB_SYCL_SIM_DEVICE=cpu` |
+| `MJLAB_SYCL_SC_CPU` | unset | keep SensorContext render buffers on cpu instead of sycl |
+| `MJLAB_PPO_DEVICE` | `xpu` if available, else `cpu` | torch device for the PPO runner in `bench` |
 | `MJLAB_TORCH_THREADS` | `2` | torch intra-op threads cap. Env managers run hundreds of tiny torch ops per step; all-core default wastes ~3 CPU cores for no speed (measured 4096 envs: 14->4.6 cores, 2->1.9 cores, same wall). Override if you want more. |
 
 ## Performance (Arc 130T, microduck velocity, 4096 envs)

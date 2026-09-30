@@ -7,6 +7,84 @@ All notable changes to mjlab-sycl.
 <!-- Add new changes here as they land; fold into a dated release section when
      tagging. -->
 
+### Added
+- Root `LICENSE` (Apache-2.0 full text) and a landing-page `README.md`
+  (what/why, quickstart, measured performance, tooling, links).
+- Launch-overhead suite for the physics hot path (Arc 130T, 4096-env
+  microduck; every knob has a `MJLAB_SYCL_*` kill switch):
+  - `launch_cache` — reuse (hooks, args_struct, bounds) for repeated
+    launches, recurrence-gated with weakref liveness checks and LRU
+    eviction so one-shot scratch buffers are never pinned.
+  - `fused_tree` — level-synchronous tree chains fused to one launch per
+    chain (210 → 30 launches/step), one work-item per world, no atomics.
+  - `fused_solver` — the four per-iteration zero/rotate kernels folded
+    into the `linesearch_jaref` tail (125 → 5 launches/step).
+  - `skip_empty` — global 0-dim launch filter (120 wasted dispatches/step
+    for featureless models; per-call, so feature-rich models untouched).
+  - `fused_linesearch` — parallel-linesearch teardown and mv+jv fusions.
+  Net: 1438 → 938 launches/step (−35%).
+- `_bootstrap` preloads oneAPI SYCL DLLs before torch-xpu can pin the pip
+  copies, so every entry point sees one consistent SYCL runtime.
+- CI installs numpy in the CPU-side job (warp needs it at import).
+
+### Changed
+- **Batched convergence polling is now default-on** (`MJLAB_SYCL_POLL_EVERY=8`,
+  superseding the 0.2.0 "default-off" note): each solve polls convergence
+  once after the first full batch instead of every iteration — with the
+  8-iteration cap the batch covers the whole solve, and extra iterations
+  are guarded no-ops, so physics stays bit-identical. Combined with
+  restoring the lite final forward, env.step went 370 → 306 ms (−17%) at
+  4096 envs. (The 0.2.0 verdict measured a smaller cadence that launched
+  extra guard iterations; `docs/performance.md` carries the updated table.)
+- Poll loop also skips the provably-useless initial drain (nsolving is
+  host-initialized > 0) and reads the convergence counter once per poll
+  instead of twice.
+- `sim.step` no longer carries an inter-substep drain: kernel-to-kernel
+  order is the queue's job, and the solve-end convergence poll is already
+  the sync before every host read mjlab makes (air-time tracking,
+  termination/reward all observe pre-solve outputs).
+- `sense()` drains only when there is no sensor context — with one,
+  `SensorContext.finalize()` drains before its torch-only host reads and
+  `sense()` launches nothing afterwards. −1 queue drain/env.step
+  (measured 8 → 7).
+- `MJLAB_SYCL_BENCH_SC_CPU` renamed to `MJLAB_SYCL_SC_CPU`.
+- README environment-variable table rewritten: all `WARP_SYCL_*` /
+  `MJLAB_SYCL_*` knobs with defaults and roles, including previously
+  undocumented ones (device, lite forward, iteration caps, every fusion
+  kill switch) — plus `MJLAB_PPO_DEVICE` documented as `xpu`.
+- Comments reconciled with code across runtime_patch, loop_poll,
+  flat_kernels, fused_tree, fused_linesearch, bench, README (drain sites,
+  tile padding, install ordering, gate count, drain/launch arithmetic).
+
+### Fixed
+- `lite_forward` was clobbered by a blanket `drained(orig_forward)`
+  assignment — the solver-skipping final forward never ran, costing ~50
+  ms/step at 4096 envs (5 solver calls per step instead of 4).
+- `play` crashed unconditionally (missing `import threading`).
+- `launch_cache` key now includes device and block_dim (entries could
+  cross-contaminate across devices/block sizes) and the cache no longer
+  bypasses tape capture (torch.compile path).
+- `flat_kernels` `_ADR_SIZE_CACHE` guards against Python `id()` recycling
+  (a recycled id returned a wrong tile size → silent Cholesky error).
+- `fused_solver_tail` CG beta=0 bug (prev values copied before beta was
+  computed — CG silently degraded to steepest descent).
+- `kview` `dict()` misuse, `install` self-check order, `fused_set_const`
+  missing physics term, epsilon constants, `bench` division by zero on
+  zero completed iterations, unused imports and dead globals (doctor's
+  stray pip-path finder, `_ORIG_RECOMPUTE`, …).
+- Dev-harness files removed from the index (`.temp/` scripts,
+  `probe_field_hunt`, leaked scratch) and `.gitignore` completed — a
+  clone contains only shippable files.
+
+### Performance
+- −35% kernel launches/step, −17% env.step from the poll/forward fixes,
+  and 7 instead of 8 queue drains/step after the sense merge; current
+  census: ~938 launches and 7 drains per env.step, median ≈ 330 ms/step
+  at 4096 envs (Arc 130T). End-to-end bench: 6,301–10,782 env-steps/s
+  over three runs vs 5,485 archived (run-to-run spread is clock/system
+  state). Every change above is A/B-verified against the cpu device
+  (max |sycl − cpu| ≈ 3e-06) and gated by `mjlab-sycl-test`.
+
 ## [0.2.0] - 2026-09-08 — first public release candidate
 
 First release shape for the community: environment preflight, one-command
