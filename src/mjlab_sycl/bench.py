@@ -7,10 +7,10 @@ num_envs and reports per-iteration rollout / update wall time.
 With ``--device sycl`` the Simulation's warp device is swapped to ``sycl``
 while every torch tensor stays on ``cpu``: the SYCL device allocates USM
 shared memory, which ``wp.to_torch`` wraps zero-copy, so the rest of mjlab
-runs unmodified. Kernel submissions are asynchronous, so every sim call
-boundary (step/forward/reset/sense/recompute_constants) drains the queue --
-those are exactly the points where host code reads or writes USM that
-kernels touch. Without this, torch reads race in-flight kernels.
+runs unmodified. Kernel submissions are asynchronous; the runtime patch
+drains the queue at the points where host code reads or writes USM (solver
+convergence polls, forward/sense/reset boundaries, host-side Bvh reads), so
+torch reads never race in-flight kernels.
 
 Usage:
     python -m mjlab_sycl.bench --device cpu   --num-envs 4096 --iters 6
@@ -120,6 +120,9 @@ def main() -> None:
   # -- report -----------------------------------------------------------------
   spe = agent_cfg.num_steps_per_env
   n_iters = len(update_times)
+  if n_iters == 0:
+    print(f"[bench] no completed iterations (iters={args.iters}); nothing to report")
+    return
   skip = min(args.skip_warmup, max(n_iters - 1, 0))
 
   def bucket(xs, i):

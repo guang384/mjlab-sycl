@@ -5,9 +5,9 @@ On CUDA, warp's ``wp.capture_while`` (used by mujoco_warp's solver loop) runs
 as a conditional graph node -- zero host round-trips. On the sycl device there
 is no graph capture, so the patched warp falls back to an emulated loop that
 drains the whole queue and reads the 1-int condition **every iteration**
-(warp/_src/context.py, capture_while non-graph branch). With ~11 solver
-iterations per solve and 5 solves per env step that is ~55 full queue drains
-per step just to poll convergence.
+(warp/_src/context.py, capture_while non-graph branch). With the default
+solver caps (8 iterations, 4 solves per env step) that is ~32 full queue
+drains per step just to poll convergence.
 
 This module replaces that emulation with batched polling:
 
@@ -15,6 +15,13 @@ This module replaces that emulation with batched polling:
     between polls (the queue only drains at the poll);
   - once few worlds remain (<= ``POLL_TAIL``), poll every iteration so the
     loop still stops exactly when they converge.
+
+With the default ``POLL_EVERY=8`` (>= the iteration cap) the first batch
+covers the whole solve, so each solve costs exactly one drain -- at solve
+end, before the caller launches fwd_acceleration/INTEGRATE.  That drain is
+also what makes later host reads of pre-solve outputs (sensordata, xpos/
+xquat, cvel) race-free.  Callers that bypass Simulation (direct mjwarp use)
+keep warp's usual async contract: synchronize before host reads.
 
 Correctness is bit-identical to the original: the host only decides *when to
 stop launching more iterations*. Iterations launched after a world converged
@@ -79,10 +86,11 @@ def install_poll_batching() -> None:
     while True:
       # drain so the raw USM read below observes all kernels submitted so far
       wp.synchronize_device("sycl")
-      if _remaining(condition) <= 0:
+      remaining = _remaining(condition)
+      if remaining <= 0:
         return
       # coarse batches while many worlds solve; per-iteration once few remain
-      batch = 1 if _remaining(condition) <= tail else poll_every
+      batch = 1 if remaining <= tail else poll_every
       for _ in range(batch):
         while_body(**kwargs)
 

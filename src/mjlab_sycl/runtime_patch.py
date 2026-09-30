@@ -3,10 +3,11 @@
 
 Physics (warp arrays) live on the ``sycl`` device while every torch tensor
 stays on ``cpu``: the SYCL device allocates USM shared memory, which
-``wp.to_torch`` wraps zero-copy. Kernel submissions are asynchronous, so every
-sim call boundary (step/forward/reset/sense/recompute_constants) drains the
-queue -- exactly the points where host code reads or writes USM that kernels
-touch.
+``wp.to_torch`` wraps zero-copy. Kernel submissions are asynchronous, so the
+queue is drained wherever host code reads or writes USM that kernels touch:
+the solver's convergence poll (once per solve), the forward/reset/recompute
+boundaries, and sense (via the sensor context's finalize, or the boundary
+itself for bare callers).  Host-side Bvh refit drains too.
 
 Also installs the barrier-free flat rewrites of mujoco_warp's tiled hot
 kernels (see flat_kernels.py) and verifies the vendored SYCL backend overlay
@@ -34,18 +35,30 @@ from mjlab_sycl import loop_poll as _sycl_loop
 from mjlab_sycl import skip_empty as _sycl_skip_empty
 
 
+_PATCHED = False
+
+
 def patch_simulation_for_sycl() -> None:
-  """Physics on the sycl device, torch on cpu, queue drained at call boundaries.
+  """Physics on the sycl device, torch on cpu, queue drained at host-read points.
 
   The sycl device reports is_cpu=True for torch/numpy interop (USM shared
   memory, zero-copy views), so only components that allocate *warp* arrays
   from the scene's device string need re-pointing to sycl: the SensorContext
   (render context feeds BVH refit kernels) and RayCastSensor ray buffers.
+
+  Idempotent: a second call is a no-op, because re-wrapping would stack the
+  drained() wrappers (double sync at every boundary) and capture the already-
+  patched functions as originals.
   """
+  global _PATCHED
+  if _PATCHED:
+    return
+
   # Hard guard, not a warning: a missing/stale backend overlay silently
   # corrupts physics (or makes the device vanish) — abort before iteration 0
   # with the exact remediation instead.
   _sycl_install.ensure_overlay_synced()
+  _PATCHED = True  # past here a retry would stack wrappers -- commit
 
   from mjlab.sim import sim as sim_mod
   from mjlab.sensor import raycast_sensor as rs_mod
@@ -65,11 +78,10 @@ def patch_simulation_for_sycl() -> None:
   def init(self, num_envs, cfg, model, device):
     # Adaptive njmax: the default velocity env cfg sets njmax=1500 which
     # wastes 99% of solver work-items for small robots (actual nefc ~14-106).
-    # Use mj_forward to measure the baseline nefc, then add headroom for
-    # contact-heavy transients (falls, multi-body contact during acrobatics):
-    #   njmax_est = baseline_nefc * 8  (covers 8x spike from 14 → 112)
-    # Capped at the configured value (don't increase beyond what caller set).
-    # Override with MJLAB_SYCL_NJMAX=N (force) or =0 (disable).
+    # Measure the baseline nefc with mj_forward, then scale it up for
+    # contact-heavy transients -- formula and rationale below.  Never raises
+    # a caller-set value.  Override with MJLAB_SYCL_NJMAX=N (force) or
+    # =0 (disable).
     import mujoco as _mj
     njmax_override = os.environ.get("MJLAB_SYCL_NJMAX", "")
     if njmax_override == "0":
@@ -229,16 +241,29 @@ def patch_simulation_for_sycl() -> None:
   wp.Bvh.refit = bvh_refit
 
   sim_mod.Simulation.__init__ = init
-  # sim.step does NOT need a drained wrapper: the solver's capture_while
-  # already drains (1 per call with poll_every=8 + initial-drain skip), and
-  # the env.step() loop calls sim.forward() / sim.sense() after the substep
-  # loop — both drain.  Between substeps, all kernels share the same SYCL
-  # queue and execute in order, so the inter-substep drain was redundant.
-  # Removing it eliminates 3 drains per env.step (1 per substep × 3 non-final
-  # substeps; the 4th is covered by lite_forward's drain).
+  # sim.step needs no drained wrapper: capture_while's convergence poll
+  # drains at solve end (1 per substep with poll_every=8 + initial-drain
+  # skip), and every host read mjlab makes in or after the substep loop
+  # observes pre-solve outputs -- scene.update's air-time tracking reads
+  # d.sensordata, termination/reward read xpos/xquat/cvel/sensordata -- all
+  # flushed by that poll drain.  Kernels launched after it (accel/integrate)
+  # are only consumed by later kernels, which the same queue orders
+  # correctly; the host writes that follow (reset's state writes) are
+  # covered by drained(reset)'s sync, which runs before _reset_idx applies
+  # the new state through torch.
   sim_mod.Simulation.step = orig_step
   sim_mod.Simulation.reset = drained(orig_reset)
-  sim_mod.Simulation.sense = drained(orig_sense)
+  # sense: when a sensor context exists, finalize() drains before its host
+  # reads (postprocess_rays is torch-only) and sense() launches nothing
+  # afterwards -- an outer drain would be a redundant sync.  Without a
+  # context sense() returns immediately; drain only in that case to keep
+  # the boundary contract for bare sense() callers.
+  def sense(self, *args, **kwargs):
+    out = orig_sense(self, *args, **kwargs)
+    if getattr(self, "_sensor_context", None) is None:
+      drain()
+    return out
+  sim_mod.Simulation.sense = sense
   sim_mod.Simulation.recompute_constants = drained(orig_recompute)
   # forward is already set above (lite_forward at line 163, or drained at 167).
   # Do NOT re-assign here — a blanket drained(orig_forward) would overwrite
@@ -254,8 +279,8 @@ def patch_simulation_for_sycl() -> None:
   # flat_kernels so its wp.launch re-routes also benefit from the cache.
   _sycl_launch_cache.install()
 
-  # Fused tree chains: one launch per chain instead of one per kinematic
-  # depth level (5 chains x 7 levels = 210 launches/step -> 30).
+  # Fused tree chains: one launch per chain invocation instead of one per
+  # kinematic depth level (7 levels per invocation: ~210 -> 30 launches/step).
   _sycl_fused_tree.install()
 
   # Fused solver zero/rotate launches: the four per-iteration zero kernels
@@ -265,13 +290,13 @@ def patch_simulation_for_sycl() -> None:
   # suppressed launches stay suppressed.
   _sycl_fused_solver.install()
 
-  # Skip 0-dim launches (flex/tendon/equality/limit when model has none).
-  # Installed as the OUTERMOST layer so all inner interceptors never see
-  # the suppressed launches.  Must be after fused_solver/fused_tree/
-  # fused_linesearch install (which set up their own interceptors) so
-  # _prev_launch captures their chain.
-  _sycl_skip_empty.install()
+  # Fused linesearch (after launch_cache/fused_solver so the cache still
+  # sees the fused kernels), then skip 0-dim launches (flex/tendon/equality/
+  # limit when the model has none) as the OUTERMOST layer: installed last so
+  # its _prev_launch captures the whole interceptor chain and no inner
+  # interceptor ever sees a suppressed launch.
   _sycl_fused_ls.install()
+  _sycl_skip_empty.install()
 
   # Fused set_const_0 + solver_tail: only beneficial on CPU (SYCL GPU
   # prefers the original parallel kernels — the fused versions serialize
@@ -286,13 +311,17 @@ def patch_simulation_for_sycl() -> None:
     from mjlab_sycl import fused_solver_tail
     fused_solver_tail.install()
 
-  # batched convergence polling for the sycl capture_while fallback.
-  # SYCL has no graph capture, so wp.capture_while emulates a loop that drains
-  # the queue and reads the 1-int condition every iteration (~8 drains per
-  # solver call × 4 substeps = 32 drains/step).  Default to poll_every=8
-  # (check once after all max-iterations) which eliminates 7/8 of the drains;
-  # physics is bit-identical because extra iterations are guarded no-ops
-  # (ctx.done flag).  Override with MJLAB_SYCL_POLL_EVERY=N.
+  # batched convergence polling for the sycl capture_while fallback.  SYCL
+  # has no graph capture, so wp.capture_while emulates a loop that drains the
+  # queue and reads the 1-int condition every iteration (up to 8 solver
+  # iterations x 4 substep solves = 32 drains/step just to poll).  Batched
+  # polling runs poll_every iterations per drain instead; with the default 8
+  # (>= the iteration cap) the whole solve is one batch, so each solve costs
+  # exactly one drain -- at solve end, which is also the sync covering the
+  # in-loop host reads described above.  Physics is bit-identical either way:
+  # extra iterations are guarded no-ops (ctx.done flag).  Override with
+  # MJLAB_SYCL_POLL_EVERY=N (1 polls every iteration, i.e. warp's original
+  # behavior).
   if not os.environ.get("MJLAB_SYCL_POLL_EVERY"):
     os.environ["MJLAB_SYCL_POLL_EVERY"] = "8"
   _sycl_loop.install_poll_batching()
