@@ -231,7 +231,14 @@ def patch_simulation_for_sycl() -> None:
   wp.Bvh.refit = bvh_refit
 
   sim_mod.Simulation.__init__ = init
-  sim_mod.Simulation.step = drained(orig_step)
+  # sim.step does NOT need a drained wrapper: the solver's capture_while
+  # already drains (1 per call with poll_every=8 + initial-drain skip), and
+  # the env.step() loop calls sim.forward() / sim.sense() after the substep
+  # loop — both drain.  Between substeps, all kernels share the same SYCL
+  # queue and execute in order, so the inter-substep drain was redundant.
+  # Removing it eliminates 3 drains per env.step (1 per substep × 3 non-final
+  # substeps; the 4th is covered by lite_forward's drain).
+  sim_mod.Simulation.step = orig_step
   sim_mod.Simulation.reset = drained(orig_reset)
   sim_mod.Simulation.sense = drained(orig_sense)
   sim_mod.Simulation.recompute_constants = drained(orig_recompute)
