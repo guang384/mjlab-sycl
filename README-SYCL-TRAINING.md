@@ -201,8 +201,9 @@ is the only reliable detector.
 
 ## Performance (Arc 130T, microduck velocity, 4096 envs)
 
-- ~5000–6800 env-steps/s end-to-end vs ~258 on the CPU device; ~22× the first
-  working SYCL build, before the flat kernels and async submission.
+- ~11,000–12,000 env-steps/s end-to-end vs ~258 on the CPU device; the
+  0.2.0 archive measured 5,485 — every gain since is itemized in
+  docs/performance.md.
 - Numerics: `max |sycl − cpu|` over 100-step rollouts on the same
   model/actions ≈ 2–3e-06.
 - Microbenchmark: 16M-float saxpy ~7.5× CPU bandwidth.

@@ -43,6 +43,18 @@ All notable changes to mjlab-sycl.
   order is the queue's job, and the solve-end convergence poll is already
   the sync before every host read mjlab makes (air-time tracking,
   termination/reward all observe pre-solve outputs).
+- Flat-kernel v2 (same `MJLAB_SYCL_FLAT_JTDAJ` switch):
+  - JTDAJ (`h = qM + J^T D J`) runs one work-item per output element with
+    a dot over constraints — the formulation upstream's own incremental
+    Hessian update uses — instead of a per-tile read-modify-write of h;
+    measured ~2.2x faster per launch on the Arc 130T.
+  - The dense cholesky pair builds from a static-n factory (row loops
+    unroll, triangular dots stay in registers) and reuses one scratch L
+    buffer instead of allocating per call (~1.8x faster).
+  - The solver's `skip_unchanged` contract is now honored on the small-nv
+    path too (nv ≤ 32): when no constraint state changed since the last
+    factorization, the LLT is skipped and only the triangular solves run
+    (upstream only cached the factorization for nv > 32).
 - `sense()` drains only when there is no sensor context — with one,
   `SensorContext.finalize()` drains before its torch-only host reads and
   `sense()` launches nothing afterwards. −1 queue drain/env.step
@@ -68,6 +80,9 @@ All notable changes to mjlab-sycl.
   (a recycled id returned a wrong tile size → silent Cholesky error).
 - `fused_solver_tail` CG beta=0 bug (prev values copied before beta was
   computed — CG silently degraded to steepest descent).
+- `_tile_cholesky_factorize_solve`'s flat replacement processed only the
+  first qM tile per world (a bare `nworld` launch dim left `nodeid` at 0);
+  silent on single-tile models, wrong for multi-tile ones.
 - `kview` `dict()` misuse, `install` self-check order, `fused_set_const`
   missing physics term, epsilon constants, `bench` division by zero on
   zero completed iterations, unused imports and dead globals (doctor's
@@ -78,12 +93,13 @@ All notable changes to mjlab-sycl.
 
 ### Performance
 - −35% kernel launches/step, −17% env.step from the poll/forward fixes,
-  and 7 instead of 8 queue drains/step after the sense merge; current
-  census: ~938 launches and 7 drains per env.step, median ≈ 330 ms/step
-  at 4096 envs (Arc 130T). End-to-end bench: 6,301–10,782 env-steps/s
-  over three runs vs 5,485 archived (run-to-run spread is clock/system
-  state). Every change above is A/B-verified against the cpu device
-  (max |sycl − cpu| ≈ 3e-06) and gated by `mjlab-sycl-test`.
+  7 instead of 8 queue drains/step after the sense merge, and −29%
+  serialized kernel time from flat-kernel v2 (435 → 308 ms/step measured
+  serialized). Current census: ~938 launches and 7 drains per env.step,
+  median ≈ 270–280 ms/step at 4096 envs (Arc 130T). End-to-end bench:
+  11,835–11,940 env-steps/s vs 5,485 archived. Every change above is
+  A/B-verified against the cpu device (max |sycl − cpu| ≈ 3e-06) and
+  gated by `mjlab-sycl-test`.
 
 ## [0.2.0] - 2026-09-08 — first public release candidate
 

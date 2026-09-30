@@ -26,7 +26,8 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 
 | config (4096 envs unless noted) | per-iteration wall | env-steps/s |
 |---|---|---|
-| sycl, PPO on **xpu** (default), post-fusion refresh (2026-09-30, 3 runs) | mean 10.2 – 17.1 s (run-to-run clock variance) | 6,301 – 10,782 |
+| sycl, PPO on **xpu** (default), flat-kernel v2 refresh (2026-09-30, 2 runs) | mean 9.1 – 9.4 s | 11,835 – 11,940 |
+| sycl, PPO on **xpu** (default), post-fusion (2026-09-30, 3 runs) | mean 10.2 – 17.1 s (run-to-run clock variance) | 6,301 – 10,782 |
 | sycl, PPO on **cpu** | 23.7 s (rollout 19.1 / ppo 4.5) | 5,140 |
 | sycl, PPO on **xpu** (default) — 2026-09-08 archive | **19.2 s** (rollout 17.9 / ppo 1.2) | 5,485 |
 | sycl, 8192 envs, PPO xpu | 37.3 s | 5,634 (+2.7 %) |
@@ -40,14 +41,14 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 
 ## Where env.step goes (census)
 
-Current (launch-fusion suite + default-on polling, measured 2026-09-30,
-4096 envs):
+Current (launch-fusion suite + flat-kernel v2 + default-on polling,
+measured 2026-09-30, 4096 envs):
 
-- median ≈ 330 ms/env.step (40-step runs, 5 warmup; run-to-run spread
+- median ≈ 270-280 ms/env.step (40-step runs, 5 warmup; run-to-run spread
   ±15 ms depending on system state)
 - ~938 kernel launches/step (was ~1,600 before the fusion suite)
 - 7 queue drains/step: 4 solve-end convergence polls + lite forward +
-  Bvh refit + sensor finalize; ~7-8 % of wall waiting in drains
+  Bvh refit + sensor finalize; ~7 % of wall waiting in drains
 
 Historical (2026-09-08 baseline, before the fusion suite and poll
 default — kept for attribution):
@@ -68,6 +69,7 @@ default — kept for attribution):
 | batched convergence polling — small cadence (poll < iteration cap) | 716 vs 671 ms/step: the extra guard no-op iterations cost more than the polls saved | dead end |
 | batched convergence polling — cadence = iteration cap (poll_every=8) | 1 poll/solve instead of every iteration; with the lite-forward restore, env.step 370 -> 306 ms (−17 %) | kept (default-on) |
 | launch cache + tree/solver/linesearch fusion + 0-dim launch skip | 1,600 -> 938 launches/step (−35 %), part of 670 -> ~330 ms/step | kept (default-on, `MJLAB_SYCL_*` kill switches) |
+| flat-kernel v2: per-element JTDAJ dot, unrolled dense cholesky, LLT skip on unchanged constraints | serialized kernel time 435 -> 308 ms/step; env.step median ~330 -> ~270 ms | kept (same `MJLAB_SYCL_FLAT_JTDAJ` switch) |
 | sense() drain merge (sensor context already drains in finalize) | 8 -> 7 drains/step, no measurable wall change | kept |
 | kernel args by-value capture (codegen) | ~1 % (noise); DPC++ also requires const kernel lambdas | dead end, reverted |
 | 8192 envs | +2.7 % | not worth wall 2x |
