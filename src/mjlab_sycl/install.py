@@ -135,13 +135,18 @@ def main() -> int:
 
   prepare_sycl_runtime_path()
 
-  try:
-    import warp
-  except ImportError:
+  # Locate warp's package dir WITHOUT executing it: on a fresh environment
+  # an import here would load stock warp (no sycl device), and the copied
+  # overlay would then be verified against already-imported modules — a
+  # false failure on exactly the machines this installer exists for.
+  import importlib.util
+
+  spec = importlib.util.find_spec("warp")
+  if spec is None or spec.origin is None:
     print("error: warp is not installed in this environment", file=sys.stderr)
     return 1
 
-  warp_dir = os.path.dirname(warp.__file__)
+  warp_dir = os.path.dirname(spec.origin)
   backend = os.path.join(os.path.dirname(__file__), "backend")
 
   # 1) overlay the patched files
@@ -157,16 +162,18 @@ def main() -> int:
         n += 1
   print(f"[mjlab-sycl] overlaid {n} backend files onto {warp_dir}")
 
+  # First import of warp now executes the overlaid files.
+  import warp
+
   # 2) place the prebuilt warpsycl.dll in warp's kernel cache
-  ver = warp.__version__
-  cache = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NVIDIA", "warp", "Cache", ver)
+  cache = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NVIDIA", "warp", "Cache", warp.__version__)
   os.makedirs(cache, exist_ok=True)
   dll = os.path.join(backend, "warpsycl.dll")
   shutil.copy2(dll, os.path.join(cache, "warpsycl.dll"))
   print(f"[mjlab-sycl] warpsycl.dll -> {cache}")
 
-  # 3) verify
-  import warp as wp  # re-import picks up the overlaid modules
+  # 3) verify the sycl device comes up on the overlaid backend
+  wp = warp
 
   wp.init()
   try:

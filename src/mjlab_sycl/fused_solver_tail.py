@@ -12,8 +12,10 @@ That is 5 launches × 11 iterations = 55 launches/step. For nv=20 all four
 fit in a single per-world work-item: the reduction over nv is a trivial loop.
 
 This module replaces the 5 launches with 1, reducing solver-iteration
-overhead by ~4/5.  Enabled with MJLAB_SYCL_FUSED_SOLVER_TAIL=1 (default on
-when patch_simulation_for_sycl runs); set to 0 to fall back.
+overhead by ~4/5.  Installed by patch_simulation_for_sycl() when the sim
+device is CPU (MJLAB_SYCL_SIM_DEVICE=cpu) or when
+MJLAB_SYCL_FUSED_SOLVER_TAIL is truthy; set it to 0 to fall back to the
+original 5 launches.
 """
 
 from __future__ import annotations
@@ -35,10 +37,9 @@ def _enabled() -> bool:
 # Fused kernel: per-world, inlines prev_grad + beta + search + done
 # ---------------------------------------------------------------------------
 
-# Solver type constants (avoid importing mujoco_warp.types at module level —
+# Solver type constant (avoid importing mujoco_warp.types at module level —
 # the kernel is compiled before the patch runs)
-_SOLVER_CG = 1     # SolverType.CG
-_SOLVER_NEWTON = 0  # SolverType.NEWTON
+_SOLVER_CG = 1  # SolverType.CG
 
 
 @wp.kernel(enable_backward=False)
@@ -87,7 +88,9 @@ def _solver_tail_fused(
                 ctx_Mgrad_in[worldid, dofid] - prev_Mg
             )
             beta_den += prev_g * prev_Mg
-        beta = wp.max(0.0, beta_num / wp.max(1e-14, beta_den))
+        # MJ_MINVAL (mujoco.mjMINVAL) — same denominator floor as upstream
+        # solve_beta; a different floor shifts CG beta near convergence.
+        beta = wp.max(0.0, beta_num / wp.max(1e-15, beta_den))
     ctx_beta_out[worldid] = beta
 
     # ── 2. Save current grad/Mgrad as prev for next iteration ────────────
@@ -141,12 +144,9 @@ def install() -> None:
             return _ORIG(m, d, ctx, step_size_cost, nsolving)
 
         # Run linesearch + constraint + gradient (unchanged — heavy kernels
-        # with tile-based parallelism that we don't touch).
+        # with tile-based parallelism that we don't touch).  The CG
+        # prev_grad/Mgrad copy is fused into _solver_tail_fused below.
         _solver._linesearch(m, d, ctx, step_size_cost)
-
-        if m.opt.solver == _solver.types.SolverType.CG:
-            # prev_grad_Mgrad was a separate launch in the original; now fused.
-            pass  # handled inside _solver_tail_fused
 
         incremental = (
             m.opt.solver == _solver.types.SolverType.NEWTON

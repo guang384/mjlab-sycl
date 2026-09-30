@@ -14,7 +14,6 @@ Usage:
 import argparse
 import time
 from collections import Counter
-from pathlib import Path
 
 import warp as wp
 

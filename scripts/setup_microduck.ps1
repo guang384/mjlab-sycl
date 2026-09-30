@@ -20,8 +20,8 @@
   `uv sync`, re-run this script afterwards).
 
 .EXAMPLE
-  .\scripts\setup_microduck.ps1 -Repo C:\dev\microduck_rl
-  .\scripts\setup_microduck.ps1 -Repo C:\dev\microduck_rl -InstallTorchXpu
+  .\scripts\setup_microduck.ps1 -Repo C:\path\to\microduck_rl
+  .\scripts\setup_microduck.ps1 -Repo C:\path\to\microduck_rl -InstallTorchXpu
   .\scripts\setup_microduck.ps1 -Repo . -PipIndex https://mirrors.aliyun.com/pypi/simple/
 #>
 param(
@@ -43,8 +43,8 @@ function Step-Hint($msg) { Write-Host ""; Write-Host "==> $msg" -ForegroundColor
 function Step-Ok($msg)    { Write-Host "    $msg" -ForegroundColor Green }
 function Step-Fail($msg)  { Write-Host "    FAIL: $msg" -ForegroundColor Red }
 
-# This machine's pip.ini lives behind env vars that --isolated cannot bypass
-# (verified the hard way) -- clear them so installs land in the venv itself.
+# A pip config file pointed at by PIP_CONFIG_FILE cannot be bypassed by
+# --isolated -- clear the env vars so installs land in the venv itself.
 Remove-Item Env:PIP_CONFIG_FILE, Env:PIP_TARGET -ErrorAction SilentlyContinue
 
 $RepoPath = (Resolve-Path -LiteralPath $Repo).Path

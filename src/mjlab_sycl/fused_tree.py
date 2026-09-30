@@ -6,10 +6,10 @@ mujoco_warp computes tree reductions (subtree CoM, composite rigid body,
 cfrc backward, linear/angular momentum) with a *level-synchronous* sweep:
 ``for body_tree in reversed(m.body_tree): wp.launch(kernel, ...)`` — one
 launch per kinematic-tree depth level.  For microduck that is 7 launches
-per chain invocation, and the five chains run 30 times per env step:
-210 launches/step where each launch carries ~0.10 ms of pure submission +
-tiny-kernel execution overhead while doing almost no work (the deepest
-levels have 1-3 bodies).
+per chain invocation, and the five chains are invoked 30 times per env
+step in total: 30 x 7 = 210 launches/step, each launch carrying ~0.10 ms
+of pure submission + tiny-kernel execution overhead while doing almost
+no work (the deepest levels have 1-3 bodies).
 
 The fused replacement runs ONE work-item per world which walks all bodies
 in deepest->shallowest order (exactly the order the level loop used) and
@@ -85,7 +85,7 @@ def _tree_order(m):
     ends.append(total)
   order = wp.array(np.concatenate(flat), dtype=wp.int32, device=device)
   level_ends = wp.array(np.array(ends, dtype=np.int32), dtype=wp.int32, device=device)
-  entry = (order, level_ends, len(levels), device)
+  entry = (order, level_ends, len(levels))
   try:
     _ORDER_CACHE[m] = entry
   except TypeError:
@@ -279,7 +279,7 @@ def install() -> None:
   def com_pos(m, d):
     if not _enabled():
       return _ORIG["com_pos"](m, d)
-    order, ends, nlevels, _dev = _tree_order(m)
+    order, ends, nlevels = _tree_order(m)
     # _subtree_com_init: subtree_com = xipos * mass
     wp.launch(
       smooth._subtree_com_init,
@@ -316,7 +316,7 @@ def install() -> None:
   def crb(m, d):
     if not _enabled():
       return _ORIG["crb"](m, d)
-    order, ends, nlevels, _dev = _tree_order(m)
+    order, ends, nlevels = _tree_order(m)
     wp.copy(d.crb, d.cinert)
     wp.launch(
       _tree_crb_accumulate,
@@ -343,7 +343,7 @@ def install() -> None:
   def _rne_cfrc_backward(m, d):
     if not _enabled():
       return _ORIG["rne_cfrc_backward"](m, d)
-    order, ends, nlevels, _dev = _tree_order(m)
+    order, ends, nlevels = _tree_order(m)
     wp.launch(
       _tree_cfrc_backward,
       dim=d.nworld,
@@ -354,7 +354,7 @@ def install() -> None:
   def subtree_vel(m, d):
     if not _enabled():
       return _ORIG["subtree_vel"](m, d)
-    order, ends, nlevels, _dev = _tree_order(m)
+    order, ends, nlevels = _tree_order(m)
     subtree_bodyvel = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
     wp.launch(
       smooth._subtree_vel_forward,

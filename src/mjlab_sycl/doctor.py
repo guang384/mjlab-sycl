@@ -25,21 +25,16 @@ Usage:
 """
 
 import argparse
-import glob
 import os
 import sys
 
 # sycl8.dll PATH ordering -- must run before torch/warp come up (see
 # _bootstrap); the torch-XPU check below imports torch.
+from mjlab_sycl._bootstrap import find_oneapi_bin
 from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
 from mjlab_sycl.install import WARP_VERSION
 
 prepare_sycl_runtime_path()
-
-_ONEAPI_ROOTS = (
-    "C:/Program Files (x86)/Intel/oneAPI",
-    "C:/Program Files/Intel/oneAPI",
-)
 
 
 def _check(label: str, ok: bool, detail: str = "", fix: str | None = None) -> bool:
@@ -47,17 +42,6 @@ def _check(label: str, ok: bool, detail: str = "", fix: str | None = None) -> bo
   if not ok and fix:
     print(f"       fix: {fix}")
   return ok
-
-
-def _find_oneapi_bin() -> str | None:
-  env = os.environ.get("WARP_SYCL_ONEAPI_BIN", "")
-  if env and os.path.isdir(env):
-    return env
-  for root in _ONEAPI_ROOTS:
-    hits = sorted(glob.glob(os.path.join(root, "compiler", "*", "bin")))
-    if hits:
-      return hits[-1]  # newest compiler version
-  return None
 
 
 def _device_kernel_test() -> tuple[bool, str]:
@@ -135,7 +119,7 @@ def main() -> None:
       print(f"         - {p.splitlines()[0]}")
 
   # 4. oneAPI runtime -----------------------------------------------------------
-  oneapi_bin = _find_oneapi_bin()
+  oneapi_bin = find_oneapi_bin()
   if oneapi_bin:
     has_runtime = os.path.isfile(os.path.join(oneapi_bin, "sycl8.dll")) or os.path.isfile(
       os.path.join(oneapi_bin, "icx.exe")

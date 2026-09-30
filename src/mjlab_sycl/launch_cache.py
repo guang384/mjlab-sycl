@@ -61,9 +61,9 @@ Other safety properties:
 Measured impact (4096 envs, Arc 130T, idle GPU): rollout 16.5 s -> 11.0 s
 per iteration (-33%), throughput 5,968 -> 8,953 env-steps/s (+50%).  The
 cache shifts the step bottleneck from host launch overhead to GPU
-execution, so when another GPU client (e.g. the microduck 3D viewer) is
-co-running on this iGPU the gain shrinks and can temporarily reverse —
-re-run ``.temp/ab_step.py`` on a quiet GPU for clean numbers.
+execution, so when another GPU client (e.g. a 3D viewer) is co-running on
+the iGPU the gain shrinks and can temporarily reverse — benchmark on an
+idle GPU for clean numbers.
 
 Kill switch: ``MJLAB_SYCL_LAUNCH_CACHE=0``.
 """
@@ -76,6 +76,7 @@ import weakref
 from collections import OrderedDict
 
 import warp as wp
+from warp._src import context as ctx
 
 _orig_launch = None
 # OrderedDict so insertion order tracks recency: hot entries get
@@ -164,9 +165,7 @@ def install() -> None:
   wp.launch = _cached_launch
   # launch_tiled forwards to context.launch via a module-level reference,
   # so patch that too (covers flat_kernels' tiled fallback path).
-  from warp._src import context as _ctx
-
-  _ctx.launch = _cached_launch
+  ctx.launch = _cached_launch
   print(
     "[sycl-launch-cache] cached wp.launch installed "
     "(MJLAB_SYCL_LAUNCH_CACHE=0 to disable)"
@@ -178,9 +177,7 @@ def uninstall() -> None:
   if _orig_launch is None:
     return
   wp.launch = _orig_launch
-  from warp._src import context as _ctx
-
-  _ctx.launch = _orig_launch
+  ctx.launch = _orig_launch
   _orig_launch = None
 
 
@@ -204,127 +201,83 @@ def _cached_launch(
   block_dim=256,
 ):
   # Fast path only for the exact launch pattern the physics hot path uses.
-  if (
+  # While a wp.Tape is open, bypass the cache entirely (both lookup and
+  # storage): warp records each launch on the original launch path, and a
+  # cached replay would silently skip tape.record_launch — wrong gradients.
+  cacheable = not (
     adjoint
     or record_cmd
     or stream is not None
     or getattr(kernel, "is_generic", False)
-  ):
-    return _orig_launch(
-      kernel,
-      dim,
-      inputs,
-      outputs,
-      adj_inputs,
-      adj_outputs,
-      device,
-      stream,
-      adjoint,
-      record_tape,
-      record_cmd,
-      max_blocks,
-      block_dim,
-    )
+  )
+  if cacheable and ctx.runtime is not None and ctx.runtime.tape is not None:
+    cacheable = False
 
-  fwd_args = tuple(inputs) + tuple(outputs)
-  ndim = _normalize_dim(dim)
+  build_key = None
+  fwd_args = ()
+  ndim = None
+  if cacheable:
+    fwd_args = tuple(inputs) + tuple(outputs)
+    ndim = _normalize_dim(dim)
 
-  # Build the cache key.  wp.array objects hash by identity (default object
-  # hash); int/float scalars hash by value.  Include device and block_dim
-  # so that the same kernel launched on different devices or with different
-  # block dimensions does not cross-contaminate cached entries.
-  # record_tape launches are excluded from the cache entirely (the _build
-  # path returns early when tape is active), so we don't need it in the key.
-  try:
-    key = (kernel, fwd_args, ndim, device, block_dim)
-    cached = _cache.get(key)
-  except TypeError:
-    return _orig_launch(
-      kernel,
-      dim,
-      inputs,
-      outputs,
-      adj_inputs,
-      adj_outputs,
-      device,
-      stream,
-      adjoint,
-      record_tape,
-      record_cmd,
-      max_blocks,
-      block_dim,
-    )
+    # Build the cache key.  wp.array objects hash by identity (default
+    # object hash); int/float scalars hash by value.  Include device and
+    # block_dim so that the same kernel launched on different devices or
+    # with different block dimensions does not cross-contaminate entries.
+    # record_tape is not part of the key: tape-active launches never reach
+    # this point (cacheable is False above).
+    try:
+      key = (kernel, fwd_args, ndim, device, block_dim)
+      cached = _cache.get(key)
+    except TypeError:
+      cached = None
+      key = None
 
-  if cached is not None:
-    _STATS["hit"] += 1
-    # LRU: refresh recency so frequently-reused entries (the persistent
-    # physics hot path) survive while one-shot / per-substep entries drift
-    # toward eviction.  move_to_end rehashes the key (~1-2 us) — negligible
-    # vs the ~100 us each launch saves.
-    _cache.move_to_end(key)
-    hooks, args_struct, bounds = cached
-    # bounds was validated non-empty when the entry was built
-    hooks.forward(bounds, ctypes.byref(args_struct))
-    return
-
-  _STATS["miss"] += 1
-  # Recurrence gate with liveness verification (see module docstring).
-  fp = hash(key)
-  seen = _seen_once.get(fp)
-  if seen is not None:
-    kernel_ref, arg_refs = seen
-    if _args_survive(kernel_ref, arg_refs, kernel, fwd_args):
-      # Proven recurring: every object survived across launches, so the
-      # argument set is persistent — safe to pin with strong references.
-      _STATS["recurring"] += 1
-      _orig_launch(
-        kernel,
-        dim,
-        inputs,
-        outputs,
-        adj_inputs,
-        adj_outputs,
-        device,
-        stream,
-        adjoint,
-        record_tape,
-        record_cmd,
-        max_blocks,
-        block_dim,
-      )
-      _build_cache_entry(kernel, ndim, fwd_args, device, block_dim, key)
+    if key is not None and cached is not None:
+      _STATS["hit"] += 1
+      # LRU: refresh recency so frequently-reused entries (the persistent
+      # physics hot path) survive while one-shot / per-substep entries drift
+      # toward eviction.  move_to_end rehashes the key (~1-2 us) — negligible
+      # vs. the ~100 us each launch saves.
+      _cache.move_to_end(key)
+      hooks, args_struct, bounds = cached
+      # bounds was validated non-empty when the entry was built
+      hooks.forward(bounds, ctypes.byref(args_struct))
       return
-    # Same fingerprint but the original objects died: recycled ids, not a
-    # recurrence.  Refresh the stored weakrefs and stay on the slow path.
-    _STATS["recycled"] += 1
-    _seen_once[fp] = (
-      _arg_ref(kernel),
-      tuple(_arg_ref(a) for a in fwd_args),
-    )
-    return _orig_launch(
-      kernel,
-      dim,
-      inputs,
-      outputs,
-      adj_inputs,
-      adj_outputs,
-      device,
-      stream,
-      adjoint,
-      record_tape,
-      record_cmd,
-      max_blocks,
-      block_dim,
-    )
 
-  # First sight: store weakrefs (never pins memory) and run the slow path.
-  _STATS["first_seen"] += 1
-  if len(_seen_once) < _MAX_SEEN:
-    _seen_once[fp] = (
-      _arg_ref(kernel),
-      tuple(_arg_ref(a) for a in fwd_args),
-    )
-  return _orig_launch(
+    if key is not None:
+      _STATS["miss"] += 1
+      # Recurrence gate with liveness verification (see module docstring).
+      fp = hash(key)
+      seen = _seen_once.get(fp)
+      if seen is not None:
+        kernel_ref, arg_refs = seen
+        if _args_survive(kernel_ref, arg_refs, kernel, fwd_args):
+          # Proven recurring: every object survived across launches, so the
+          # argument set is persistent — safe to pin with strong references.
+          _STATS["recurring"] += 1
+          build_key = key
+        else:
+          # Same fingerprint but the original objects died: recycled ids,
+          # not a recurrence.  Refresh the stored weakrefs and stay on the
+          # slow path.
+          _STATS["recycled"] += 1
+          _seen_once[fp] = (
+            _arg_ref(kernel),
+            tuple(_arg_ref(a) for a in fwd_args),
+          )
+      else:
+        # First sight: store weakrefs (never pins memory), then slow path.
+        _STATS["first_seen"] += 1
+        if len(_seen_once) < _MAX_SEEN:
+          _seen_once[fp] = (
+            _arg_ref(kernel),
+            tuple(_arg_ref(a) for a in fwd_args),
+          )
+
+  # Single slow-path exit: the original wp.launch (also the tape-recording
+  # path, the TypeError/unhashable-arg path, and every non-hot pattern).
+  _orig_launch(
     kernel,
     dim,
     inputs,
@@ -339,6 +292,8 @@ def _cached_launch(
     max_blocks,
     block_dim,
   )
+  if build_key is not None:
+    _build_cache_entry(kernel, ndim, fwd_args, device, block_dim, build_key)
 
 
 def _build_cache_entry(kernel, ndim, fwd_args, device, block_dim, key) -> None:

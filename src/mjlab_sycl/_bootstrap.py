@@ -7,7 +7,8 @@ first or warp's device registration fails with WinError 127. torch also needs
 its pip-provided runtime dir on PATH to import at all.
 
 PATH ordering (first match wins):
-  1. oneAPI's compiler bin (WARP_SYCL_ONEAPI_BIN, or the default install)
+  1. oneAPI's compiler bin (WARP_SYCL_ONEAPI_BIN, else the newest install
+     found under the default roots -- see find_oneapi_bin)
   2. everything already on PATH
   3. the pip SYCL runtime dir, auto-detected from site-packages
      (dpcpp-cpp-rt's Library/bin layout) or set via WARP_SYCL_PIP_BIN --
@@ -17,6 +18,7 @@ PATH ordering (first match wins):
 import ctypes
 import glob
 import os
+import re
 import sys
 
 # DLLs shipped by BOTH oneAPI and the pip runtime stack under the same name.
@@ -58,15 +60,52 @@ _MKL_SYCL_DLLS = [
 # in a dropped temp would let the loader unload the DLL and lose the pin).
 _PRELOADED = []
 
+_ONEAPI_ROOTS = (
+    "C:/Program Files (x86)/Intel/oneAPI",
+    "C:/Program Files/Intel/oneAPI",
+)
+
+
+def _version_key(path: str) -> list[int]:
+  """Sort key ordering digit runs numerically, so 2025.10 > 2025.9."""
+  return [int(x) for x in re.findall(r"\d+", path)]
+
+
+def find_oneapi_bin() -> str:
+  """Resolve the oneAPI compiler bin dir for PATH prepends and preloads.
+
+  WARP_SYCL_ONEAPI_BIN wins when set (callers verify the dir exists);
+  otherwise pick the newest compiler/<ver>/bin under the default install
+  roots. Returns "" when nothing is found. The PATH bootstrap and the
+  doctor share this so they can never disagree about which runtime is
+  active.
+  """
+  env = os.environ.get("WARP_SYCL_ONEAPI_BIN", "")
+  if env:
+    return env
+  hits = [
+      p
+      for root in _ONEAPI_ROOTS
+      for p in glob.glob(os.path.join(root, "compiler", "*", "bin"))
+      if os.path.isdir(p)
+  ]
+  return max(hits, key=_version_key) if hits else ""
+
 
 def preload_oneapi_sycl_runtime(oneapi_bin: str) -> None:
   """Load oneAPI's SYCL-stack DLLs before torch/warp can load the pip copies."""
   dirs = [oneapi_bin]
-  mkl_bin = os.path.normpath(
-      os.path.join(os.path.dirname(oneapi_bin), "..", "mkl", "2025.3", "bin")
-  )
-  if os.path.isdir(mkl_bin):
-    dirs.append(mkl_bin)
+  # MKL ships beside the compiler under mkl/<ver>/bin; glob instead of
+  # pinning a version so a newer oneAPI install keeps working unedited.
+  mkl_hits = [
+      p
+      for p in glob.glob(
+          os.path.normpath(os.path.join(os.path.dirname(oneapi_bin), "..", "mkl", "*", "bin"))
+      )
+      if os.path.isdir(p)
+  ]
+  if mkl_hits:
+    dirs.append(max(mkl_hits, key=_version_key))
   for dll in _COMPILER_DLLS + _MKL_SYCL_DLLS:
     for d in dirs:
       p = os.path.join(d, dll)
@@ -104,15 +143,12 @@ def configure_torch_threads(default: int = 2) -> None:
 
 
 def prepare_sycl_runtime_path() -> None:
-  oneapi = os.environ.get(
-      "WARP_SYCL_ONEAPI_BIN",
-      "C:/Program Files (x86)/Intel/oneAPI/compiler/2025.3/bin",
-  )
+  oneapi = find_oneapi_bin()
   pip_bin = os.environ.get("WARP_SYCL_PIP_BIN", "")
   if not pip_bin:
     # pip installs a wheel's data files relative to the PREFIX root, i.e.
-    # <venv>/Library/bin -- not under site-packages. Fall back to the old
-    # (site-packages-relative) probe for --prefix layouts like D:\py.
+    # <venv>/Library/bin -- not under site-packages. Fall back to a
+    # site-packages-relative probe for --prefix layouts.
     for site in [p for p in sys.path if p.endswith("site-packages")]:
       prefix = os.path.dirname(os.path.dirname(site))  # <venv>/Lib/site-packages
       hits = sorted(glob.glob(os.path.join(prefix, "Library", "bin")))

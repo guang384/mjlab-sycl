@@ -16,7 +16,6 @@ import argparse
 import dataclasses
 import threading
 import time
-from pathlib import Path
 
 # sycl8.dll PATH ordering -- must run before torch/warp come up (see _bootstrap)
 from mjlab_sycl._bootstrap import prepare_sycl_runtime_path

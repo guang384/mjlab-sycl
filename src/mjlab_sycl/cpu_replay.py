@@ -8,12 +8,13 @@ single duck is sub-ms, so motion is smooth realtime.
 
 IMPORTANT fidelity caveat: plain MuJoCo lacks the BAM voltage-actuator model
 and the exact observation stack, so this is an APPROXIMATE replay (position
-servos + a hand-built 61-D obs): good for watching smooth behavior and rough
+servos + a hand-built obs: gyro/grav/joint state/action/cmd; 61 floats for
+microduck's 14 servos): good for watching smooth behavior and rough
 sim2real sanity, NOT a faithful re-run of the trained environment.
 
 Usage:
     python -m mjlab_sycl.cpu_replay <TASK_ID> --checkpoint <model_XXXX.pt>
-        [--vx 0.4] [--max-s 120]
+        [--vx 0.4] [--max-s 600]
 """
 
 import argparse
@@ -261,7 +262,7 @@ def main() -> None:
 
   def _body_angvel():
     # crude gyro: trunk angular velocity in body frame from quat finite diff
-    q = data.qpos[3:7]
+    q = data.qpos[3:7].copy()  # copy: normalizing in place would write into sim state
     q /= np.linalg.norm(q)
     dq = q - prev_q
     ang_world = 2.0 * np.array([q[0] * dq[1] - q[1] * dq[0] - q[2] * dq[3] + q[3] * dq[2],
@@ -274,7 +275,7 @@ def main() -> None:
     return R.T @ ang_world
 
   def _obs():
-    q = data.qpos[3:7]
+    q = data.qpos[3:7].copy()  # copy: normalizing in place would write into sim state
     q /= np.linalg.norm(q)
     w, x, y, z = q
     R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
@@ -290,14 +291,19 @@ def main() -> None:
 
   with torch.inference_mode():
     from tensordict import TensorDict
-    critic_zero = torch.zeros(1, 76, device="cpu")
+    # dummy critic entry: the actor selects its own obs groups and never
+    # reads this one; dims come from the loaded model, not hardcoded sizes
+    critic_zero = torch.zeros(1, policy.critic.obs_dim, device="cpu")
     while True:
       if viewer is not None and not viewer.is_running():
         break
       if time.perf_counter() - t_start > args.max_s:
         break
       obs = _obs()
-      assert obs.shape[0] == 61, obs.shape
+      assert obs.shape[0] == policy.actor.obs_dim, (
+        f"hand-built obs has {obs.shape[0]} floats, actor expects "
+        f"{policy.actor.obs_dim} for this checkpoint"
+      )
       td = TensorDict(
         {"actor": torch.tensor(obs[None], device="cpu"), "critic": critic_zero},
         batch_size=(1,),

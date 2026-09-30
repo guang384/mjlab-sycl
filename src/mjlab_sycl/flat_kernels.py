@@ -3,7 +3,8 @@
 
 See the module docstring sections below for each kernel. Installed together
 with the SYCL simulation patch (runtime_patch.py); MJLAB_SYCL_FLAT_JTDAJ=0
-disables (historical name -- it kills all four rewrites).
+disables (historical name -- it gates all six rewrites: JTDAJ, contact_jac,
+and the four cholesky variants).
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ import os
 
 import warp as wp
 
-_TILE = 16  # must divide nv_pad (mujoco_warp pads nv to TILE_SIZE_JTDAJ_DENSE)
+_TILE = 16  # upstream TILE_SIZE_JTDAJ_DENSE; nv_pad is only a multiple of 16
+# when nv > 32 (smaller dense models pad to 4), so edge tiles are clipped
 _QUADRATIC = 1  # mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC
 
 _KERNEL_CACHE = {}
@@ -247,7 +249,7 @@ def install() -> None:
 
   _orig_launch_tiled = wp.launch_tiled
   wp.launch_tiled = patched_launch_tiled
-  print("[sycl-flat] flat replacements installed: JTDAJ + contact_jac (MJLAB_SYCL_FLAT_JTDAJ=0 to disable)")
+  print("[sycl-flat] flat replacements installed: JTDAJ + contact_jac + 4 cholesky (MJLAB_SYCL_FLAT_JTDAJ=0 to disable)")
 
 
 # ---------------------------------------------------------------------------

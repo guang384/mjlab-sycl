@@ -27,8 +27,9 @@ Both fusions are installed as replacements inside the
 layer is the same pattern as ``fused_solver.py``: wrap wp.launch to
 replace specific kernel keys, and suppress the originals.
 
-Installed AFTER launch_cache and fused_solver (outermost layer) so the
-cache sees the fused kernels.
+Installed after launch_cache and fused_solver (so the cache still sees the
+fused kernels); runtime_patch then wraps skip_empty around this interceptor,
+keeping that one the single outermost filter.
 
 Kill switch: ``MJLAB_SYCL_FUSED_LINESEARCH=0``.
 """

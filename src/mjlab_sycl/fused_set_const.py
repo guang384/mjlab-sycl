@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fused replacement for the Python for-loops in mujoco_warp's set_const_0.
 
-The three Python for-loops after factor_m (dof_invweight0, body_invweight0,
-actuator_acc0) issue ~372 kernel launches for microduck (nv=20, nbody=16,
-nu=14). This module replaces them with a single warp kernel — one work-item
-per world, all Cholesky forward+back substitutions inlined.
+The four Python for-loops after factor_m (dof_invweight0, body_invweight0,
+tendon_invweight0, actuator_acc0) issue ~372 kernel launches for microduck
+(nv=20, nbody=16, nu=14). This module replaces them with a single warp
+kernel — one work-item per world, all Cholesky forward+back substitutions
+inlined.
 
-Enabled by default after patch_simulation_for_sycl(); set
-MJLAB_SYCL_FUSED_SET_CONST=0 to fall back to the original loops.
+Installed by patch_simulation_for_sycl() when the sim device is CPU
+(MJLAB_SYCL_SIM_DEVICE=cpu) or when MJLAB_SYCL_FUSED_SET_CONST is truthy;
+set MJLAB_SYCL_FUSED_SET_CONST=0 to fall back to the original loops. On the
+SYCL GPU the original parallel kernels win — this fused form serializes
+per-world work — which is why it is not the default there.
 """
 
 from __future__ import annotations
@@ -64,15 +68,21 @@ def _set_const_0_loops_fused(
     moment_rowadr: wp.array2d[int],
     moment_colind: wp.array2d[int],
     actuator_moment: wp.array2d[float],
+    ten_J_rownnz: wp.array[int],
+    ten_J_rowadr: wp.array[int],
+    ten_J_colind: wp.array[int],
+    ten_J: wp.array2d[float],
     nv: int,
     nbody: int,
     nu: int,
+    ntendon: int,
     env_ids: wp.array[int],       # world indices to process (selective recompute)
     scratch_j: wp.array2d[float],
     scratch_y: wp.array2d[float],
     scratch_x: wp.array2d[float],
     dof_invweight0_out: wp.array2d[float],
     body_invweight0_out: wp.array2d[wp.vec2],
+    tendon_invweight0_out: wp.array2d[float],
     actuator_acc0_out: wp.array2d[float],
 ):
     tid = wp.tid()
@@ -103,12 +113,14 @@ def _set_const_0_loops_fused(
         # x[i] = diag(M⁻¹)[i]
         dof_invweight0_out[worldid, i] = sx[worldid, i]
 
-    # finalize dof_invweight0: FREE joint (type 0) averages groups of 3
+    # finalize dof_invweight0: multi-DOF joints average their group of 3
+    # (upstream _finalize_dof_invweight0: FREE averages trans and rot
+    # separately, BALL averages its 3 rotational dofs, HINGE/SLIDE pass through)
     for i in range(nv):
         jntid = dof_jntid[i]
         jtype = jnt_type[jntid]
         da = jnt_dofadr[jntid]
-        if jtype == 0 and i == da:
+        if jtype == 0 and i == da:  # FREE: 6 dofs
             at = (dof_invweight0_out[worldid, da] +
                   dof_invweight0_out[worldid, da + 1] +
                   dof_invweight0_out[worldid, da + 2]) * (1.0 / 3.0)
@@ -118,6 +130,12 @@ def _set_const_0_loops_fused(
             for d in range(3):
                 dof_invweight0_out[worldid, da + d] = at
                 dof_invweight0_out[worldid, da + 3 + d] = ar
+        elif jtype == 1 and i == da:  # BALL: 3 rotational dofs
+            avg = (dof_invweight0_out[worldid, da] +
+                   dof_invweight0_out[worldid, da + 1] +
+                   dof_invweight0_out[worldid, da + 2]) * (1.0 / 3.0)
+            for d in range(3):
+                dof_invweight0_out[worldid, da + d] = avg
 
     # ════════════════════════════════════════════════════════════════════════
     # body_invweight0: for each body b, 6 Jacobian rows × Cholesky solve
@@ -192,12 +210,44 @@ def _set_const_0_loops_fused(
 
         avg_t = sum_t * (1.0 / 3.0)
         avg_r = sum_r * (1.0 / 3.0)
-        mj_minval = 1e-14
+        mj_minval = 1e-15  # mujoco.mjMINVAL, as upstream _finalize_body_invweight0
         if avg_t < mj_minval and avg_r > mj_minval:
             avg_t = avg_r
         elif avg_r < mj_minval and avg_t > mj_minval:
             avg_r = avg_t
         body_invweight0_out[worldid, bodyid] = wp.vec2(avg_t, avg_r)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # tendon_invweight0: for each tendon t, J_t · M⁻¹ · J_t
+    #   (upstream _copy_tendon_jacobian + solve_m + _compute_tendon_dot_product)
+    # ════════════════════════════════════════════════════════════════════════
+    for tenid in range(ntendon):
+        rownnz = ten_J_rownnz[tenid]
+        rowadr = ten_J_rowadr[tenid]
+        # rhs = J_t (sparse row densified into sy)
+        for j in range(nv):
+            sy[worldid, j] = 0.0
+        for i in range(rownnz):
+            sid = rowadr + i
+            sy[worldid, ten_J_colind[sid]] = ten_J[worldid, sid]
+        # Cholesky solve: M * x = sy
+        for j in range(nv):
+            s = sy[worldid, j]
+            for k in range(j):
+                s -= qLD[worldid, j, k] * sy[worldid, k]
+            sy[worldid, j] = s / qLD[worldid, j, j]
+        for ii in range(nv):
+            j = nv - 1 - ii
+            s = sy[worldid, j]
+            for k in range(j + 1, nv):
+                s -= qLD[worldid, k, j] * sx[worldid, k]
+            sx[worldid, j] = s / qLD[worldid, j, j]
+        # dot = J_t · x
+        dot = float(0.0)
+        for i in range(rownnz):
+            sid = rowadr + i
+            dot += ten_J[worldid, sid] * sx[worldid, ten_J_colind[sid]]
+        tendon_invweight0_out[worldid, tenid] = dot
 
     # ════════════════════════════════════════════════════════════════════════
     # actuator_acc0: for each actuator a, ||M⁻¹ · moment_a||
@@ -259,7 +309,6 @@ def install() -> None:
     _ORIG_EVENT_APPLY = _em.EventManager.apply
 
     def patched_apply(self, mode, env_ids=None, dt=None, global_env_step_count=None):
-        global _RECOMPUTE_ENV_IDS
         if mode != "reset" or not _enabled() or global_env_step_count is None:
             return _ORIG_EVENT_APPLY(self, mode, env_ids, dt, global_env_step_count)
 
@@ -277,7 +326,13 @@ def install() -> None:
                 _RECOMPUTE_ENV_IDS = None  # all envs
             else:
                 _RECOMPUTE_ENV_IDS = env_ids
-            orig_recompute(level)
+            try:
+                orig_recompute(level)
+            finally:
+                # Always clear: if recompute raised or never reached
+                # set_const_0, a stale id list would make a LATER unrelated
+                # set_const_0 selective instead of all-worlds.
+                _RECOMPUTE_ENV_IDS = None
 
         sim.recompute_constants = capturing_recompute
         try:
@@ -357,13 +412,15 @@ def install() -> None:
                 d.subtree_com, d.xipos, d.cdof,
                 d.moment_rownnz, d.moment_rowadr, d.moment_colind,
                 d.actuator_moment,
-                nv, nbody, nu,
+                m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, d.ten_J,
+                nv, nbody, nu, m.ntendon,
                 env_ids_wp,
                 sj, sy, sx,
             ],
             outputs=[
                 m.dof_invweight0,
                 m.body_invweight0,
+                m.tendon_invweight0,
                 m.actuator_acc0,
             ],
             device=dev,
@@ -391,9 +448,6 @@ def install() -> None:
                                d.actuator_moment, dof_M0, nv],
                        outputs=[m.actuator_biasprm])
         wp.copy(d.qpos, qpos_saved)
-
-        # Reset for next call
-        _RECOMPUTE_ENV_IDS = None
 
     _io.set_const_0 = patched
     print("[sycl-fused] fused+selective set_const_0 installed "

@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import dataclasses
 import re
 import threading
 import time
@@ -64,10 +65,10 @@ def _extract_duck_body(xml: str) -> str:
 def build_k_model(robot_xml: str, k: int, spacing: float = 0.75):
   """Compile an in-memory model with k ducks in a row.
 
-  Returns (mj_model, per-duck column maps, per-duck slot x). Each duck copy is
-  renamed with a per-slot prefix; duck 0 keeps its original names. The maps
-  give, for every duck, the (model qpos index -> sim qpos column) pairs to
-  copy so the mirror is exact regardless of compiler ordering.
+  Returns (mj_model, per-duck column maps, per-duck slot x, nq_env). Each duck
+  copy is renamed with a per-slot prefix; duck 0 keeps its original names. The
+  maps give, for every duck, the (model qpos index -> sim qpos column) pairs
+  to copy so the mirror is exact regardless of compiler ordering.
   """
   text = Path(robot_xml).read_text(encoding="utf-8")
   # mesh assets resolve relative to meshdir; make it absolute so compiling
@@ -220,7 +221,7 @@ def main() -> None:
   ppo_device = args.ppo_device or ("xpu" if torch.xpu.is_available() else "cpu")
   policy = None
   if args.checkpoint:
-    runner = MjlabOnPolicyRunner(env, dict(agent_cfg), None, ppo_device)
+    runner = MjlabOnPolicyRunner(env, dataclasses.asdict(agent_cfg), None, ppo_device)
     runner.load(args.checkpoint)
     policy = runner.alg
     print(f"[kview] checkpoint loaded: {args.checkpoint}", flush=True)
@@ -300,6 +301,7 @@ def main() -> None:
   step_dt = float(env.unwrapped.step_dt)
   if sim.qpos.shape[1] != nq_env:
     raise SystemExit(f"sim qpos width {sim.qpos.shape[1]} != robot model {nq_env}")
+  action_dim = env.unwrapped.action_manager.total_action_dim
   n = 0
   with torch.inference_mode():
     while not stop.is_set():
@@ -307,7 +309,7 @@ def main() -> None:
       if policy is not None:
         actions = policy.act(obs)
       else:
-        actions = torch.randn(args.num_envs, 14, device=ppo_device) * 0.35
+        actions = torch.randn(args.num_envs, action_dim, device=ppo_device) * 0.35
       obs, _r, _d, _e = env.step(actions.to("cpu"))
       obs = obs.to(ppo_device)
       try:
