@@ -232,10 +232,17 @@ def patch_simulation_for_sycl() -> None:
 
   sim_mod.Simulation.__init__ = init
   sim_mod.Simulation.step = drained(orig_step)
-  sim_mod.Simulation.forward = drained(orig_forward)
   sim_mod.Simulation.reset = drained(orig_reset)
   sim_mod.Simulation.sense = drained(orig_sense)
   sim_mod.Simulation.recompute_constants = drained(orig_recompute)
+  # NOTE: forward is set AFTER this block — the lite_forward assignment
+  # (line 163) must NOT be overwritten by a blanket drained(orig_forward).
+
+  if _lite_forward:
+    sim_mod.Simulation.forward = lite_forward
+    # already printed above
+  else:
+    sim_mod.Simulation.forward = drained(orig_forward)
 
   # barrier-free flat rewrites of the hottest tiled kernels
   flat_kernels.install()
@@ -279,8 +286,15 @@ def patch_simulation_for_sycl() -> None:
     from mjlab_sycl import fused_solver_tail
     fused_solver_tail.install()
 
-  # batched convergence polling for the sycl capture_while fallback
-  # (MJLAB_SYCL_POLL_EVERY=N; off by default -> original per-iteration polls)
+  # batched convergence polling for the sycl capture_while fallback.
+  # SYCL has no graph capture, so wp.capture_while emulates a loop that drains
+  # the queue and reads the 1-int condition every iteration (~8 drains per
+  # solver call × 4 substeps = 32 drains/step).  Default to poll_every=8
+  # (check once after all max-iterations) which eliminates 7/8 of the drains;
+  # physics is bit-identical because extra iterations are guarded no-ops
+  # (ctx.done flag).  Override with MJLAB_SYCL_POLL_EVERY=N.
+  if not os.environ.get("MJLAB_SYCL_POLL_EVERY"):
+    os.environ["MJLAB_SYCL_POLL_EVERY"] = "8"
   _sycl_loop.install_poll_batching()
 
 
