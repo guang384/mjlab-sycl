@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fuse the linesearch parallel teardown and jv+mv computation kernels.
 
-Two fusions in the parallel linesearch path (the path microduck uses,
+Three fusions in the parallel linesearch path (the path microduck uses,
 ``m.opt.ls_parallel=True``):
 
 1. **Teardown fusion**: ``linesearch_parallel_best_alpha`` +
@@ -22,7 +22,13 @@ Two fusions in the parallel linesearch path (the path microduck uses,
    (nefc×nv dense dot).  Saves 1 launch × ~10 iterations × 4 substeps =
    ~40 launches/step.
 
-Both fusions are installed as replacements inside the
+3. **prepare fusion**: ``linesearch_prepare_gauss`` +
+   ``linesearch_prepare_quad`` → one kernel.  The two launches are
+   adjacent in the linesearch setup; the per-world gauss reduction runs
+   in prepare_quad's work-item ``(world, 0)`` -- a single writer, so no
+   atomics and no zero_().  Saves one launch and one small memory pass.
+
+All fusions are installed as replacements inside the
 ``_linesearch_parallel`` and ``_linesearch`` functions.  The interceptor
 layer is the same pattern as ``fused_solver.py``: wrap wp.launch to
 replace specific kernel keys, and suppress the originals.
@@ -39,9 +45,11 @@ from __future__ import annotations
 import os
 
 import warp as wp
+from mujoco_warp._src import types as _mw_types
 
 _prev_launch = None
 _ORIG = {}
+_pending_prepare_gauss = None  # deferred launch awaiting the prepare_quad merge
 
 
 def _enabled() -> bool:
@@ -145,6 +153,127 @@ def _mv_jv_fused(
 
 
 # ---------------------------------------------------------------------------
+# Fused prepare_quad + prepare_gauss: both launch back-to-back at the top of
+# the parallel linesearch setup, and prepare_gauss's per-world reduction can
+# run in prepare_quad's work-item (world, 0) -- single writer, no atomics.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel(enable_backward=False)
+def _quad_gauss_fused(
+  # prepare_quad args (verbatim):
+  opt_impratio_invsqrt: wp.array[float],
+  nefc_in: wp.array[int],
+  contact_friction_in: wp.array[_mw_types.vec5],
+  contact_dim_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  efc_D_in: wp.array2d[float],
+  nacon_in: wp.array[int],
+  ctx_Jaref_in: wp.array2d[float],
+  ctx_jv_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  # prepare_gauss args (its done input is the same array as above):
+  nv: int,
+  qfrc_smooth_in: wp.array2d[float],
+  efc_Ma_in: wp.array2d[float],
+  ctx_search_in: wp.array2d[float],
+  ctx_gauss_in: wp.array[float],
+  ctx_mv_in: wp.array2d[float],
+  # outputs:
+  ctx_quad_out: wp.array2d[wp.vec3],
+  ctx_quad_gauss_out: wp.array[wp.vec3],
+):
+  worldid, efcid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  # ── folded linesearch_prepare_gauss (dofs_per_thread >= nv case: one
+  # writer per world, so no atomics and no zero_() needed) ──────────────
+  if efcid == 0:
+    quad_gauss_1 = float(0.0)
+    quad_gauss_2 = float(0.0)
+    for i in range(nv):
+      search = ctx_search_in[worldid, i]
+      quad_gauss_1 += search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
+      quad_gauss_2 += 0.5 * search * ctx_mv_in[worldid, i]
+    ctx_quad_gauss_out[worldid] = wp.vec3(ctx_gauss_in[worldid], quad_gauss_1, quad_gauss_2)
+
+  # ── prepare_quad (verbatim) ────────────────────────────────────────
+  if efcid >= nefc_in[worldid]:
+    return
+
+  Jaref = ctx_Jaref_in[worldid, efcid]
+  jv = ctx_jv_in[worldid, efcid]
+  efc_D = efc_D_in[worldid, efcid]
+
+  # init with scalar quadratic
+  quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jv * Jaref * efc_D, 0.5 * jv * jv * efc_D)
+
+  # elliptic cone: extra processing
+  if efc_type_in[worldid, efcid] == _mw_types.ConstraintType.CONTACT_ELLIPTIC:
+    # extract contact info
+    conid = efc_id_in[worldid, efcid]
+
+    if conid >= nacon_in[0]:
+      return
+
+    efcid0 = contact_efc_address_in[conid, 0]
+
+    if efcid != efcid0:
+      return
+
+    dim = contact_dim_in[conid]
+    friction = contact_friction_in[conid]
+    mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+
+    u0 = Jaref * mu
+    v0 = jv * mu
+
+    uu = float(0.0)
+    uv = float(0.0)
+    vv = float(0.0)
+    for j in range(1, dim):
+      # complete vector quadratic (for bottom zone)
+      efcidj = contact_efc_address_in[conid, j]
+      if efcidj < 0:
+        return
+      jvj = ctx_jv_in[worldid, efcidj]
+      jarefj = ctx_Jaref_in[worldid, efcidj]
+      dj = efc_D_in[worldid, efcidj]
+      DJj = dj * jarefj
+
+      quad += wp.vec3(
+        0.5 * jarefj * DJj,
+        jvj * DJj,
+        0.5 * jvj * dj * jvj,
+      )
+
+      # rescale to make primal cone circular
+      frictionj = friction[j - 1]
+      uj = jarefj * frictionj
+      vj = jvj * frictionj
+
+      # accumulate sums of squares
+      uu += uj * uj
+      uv += uj * vj
+      vv += vj * vj
+
+    quad1 = wp.vec3(u0, v0, uu)
+    efcid1 = contact_efc_address_in[conid, 1]
+    ctx_quad_out[worldid, efcid1] = quad1
+
+    mu2 = mu * mu
+    quad2 = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
+    efcid2 = contact_efc_address_in[conid, 2]
+    ctx_quad_out[worldid, efcid2] = quad2
+
+  ctx_quad_out[worldid, efcid] = quad
+
+
+# ---------------------------------------------------------------------------
 # Interceptor: replace specific kernel launches in the linesearch path
 # ---------------------------------------------------------------------------
 
@@ -157,7 +286,7 @@ _SUPPRESS_TEARDOWN = frozenset(
 
 
 def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
-  global _CTX
+  global _CTX, _pending_prepare_gauss
   if _CTX is not None:
     key = getattr(kernel, "key", None)
 
@@ -222,6 +351,38 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
           d.efc.Ma,
         ],
       )
+
+    # prepare_gauss + prepare_quad merge: defer the per-world reduction and
+    # fold it into prepare_quad's work-item (world, 0) -- the two launches
+    # are adjacent in the parallel linesearch setup.
+    if key == "linesearch_prepare_gauss__locals__kernel":
+      if _pending_prepare_gauss is not None:
+        gk, gdim, gin, gout, gargs, gkw = _pending_prepare_gauss
+        _pending_prepare_gauss = None
+        _prev_launch(gk, gdim, gin, gout, *gargs, **gkw)
+      _pending_prepare_gauss = (kernel, dim, inputs, outputs, args, kwargs)
+      return None
+
+    if key == "linesearch_prepare_quad" and _pending_prepare_gauss is not None:
+      gk, gdim, gin, gout, gargs, gkw = _pending_prepare_gauss
+      _pending_prepare_gauss = None
+      m = _CTX._model
+      # gauss inputs = [qfrc_smooth, efc.Ma, search, gauss, mv, done]; its
+      # done (gin[5]) is the same array as quad's ctx_done (inputs[11])
+      return _prev_launch(
+        _quad_gauss_fused,
+        dim,
+        list(inputs) + [m.nv] + list(gin[:5]),
+        list(outputs) + list(gout),
+        *args,
+        **kwargs,
+      )
+
+    if _pending_prepare_gauss is not None:
+      # any other launch in between must see the original order
+      gk, gdim, gin, gout, gargs, gkw = _pending_prepare_gauss
+      _pending_prepare_gauss = None
+      _prev_launch(gk, gdim, gin, gout, *gargs, **gkw)
 
     if key in _SUPPRESS_TEARDOWN:
       return None  # already done by the fused teardown

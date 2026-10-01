@@ -158,7 +158,12 @@ def install() -> None:
       if not _enabled() or m.nv > _block_dim:
         return _orig_chol_solve(m, d, ctx, skip_unchanged)
       scratch, lvalid, ones = _chol_state(ctx.h)
-      changed = ctx.changed_efc_count if skip_unchanged else ones
+      skip_ok = os.environ.get("MJLAB_SYCL_LLT_SKIP", "1").strip().lower() not in (
+        "0",
+        "false",
+        "off",
+      )
+      changed = ctx.changed_efc_count if (skip_unchanged and skip_ok) else ones
       wp.launch(
         _get_chol_solve_kernel(m.nv),
         dim=d.nworld,

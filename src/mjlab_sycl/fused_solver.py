@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Fuse the solver loop's zero/rotate launches into the tail of
-``linesearch_jaref`` — the last kernel of every solver iteration.
+"""Fuse the solver loop's small per-iteration launches into their neighbors.
+
+Two merges live here:
+
+1. ``linesearch_jaref`` zero-ahead (below): the four pure zero/rotate
+   kernels fold into the tail of ``linesearch_jaref`` — the last kernel of
+   every solver iteration.
 
 Each Newton solver iteration launches four pure zero/rotate kernels whose
 only job is to prepare accumulators for the phase that follows:
@@ -17,6 +22,12 @@ jaref kernel itself (work-item ``efcid==0`` per world), so one launch does
 the work of five.  Per iteration that is 4 fewer launches; at ~10
 iterations x 4 physics substeps per env step it removes ~160
 launches/memsets per step.
+
+2. ``solve_search_update`` + ``solve_done``: the per-world convergence
+   bookkeeping runs in the per-dof search-update kernel's work-item
+   ``(world, 0)``.  The two launches are adjacent in the iteration and
+   ``solve_done`` only reads cost/prev_cost/grad_dot (final long before
+   both), so values are identical.
 
 The jaref replacement must be layered OUTSIDE ``launch_cache`` (installed
 after it) so the cache sees the *fused* kernel and its args — otherwise a
@@ -45,6 +56,8 @@ from __future__ import annotations
 import os
 
 import warp as wp
+from mujoco_warp._src import types as _mw_types
+from mujoco_warp._src.solver import _rescale as _mw_rescale
 
 _CTX = None  # active SolverContext while a fused iteration runs
 _SUPPRESS = frozenset(
@@ -56,6 +69,7 @@ _SUPPRESS = frozenset(
 )
 _prev_launch = None
 _orig_solver_iteration = None
+_pending_search_update = None  # deferred launch call awaiting the solve_done merge
 
 
 def _enabled() -> bool:
@@ -108,8 +122,63 @@ def _jaref_zeroahead(
   ctx_Jaref_out[worldid, efcid] += ctx_alpha_in[worldid] * ctx_jv_in[worldid, efcid]
 
 
+@wp.kernel(enable_backward=False)
+def _search_done_fused(
+  # solve_search_update args:
+  opt_solver: int,
+  ctx_Mgrad_in: wp.array2d[float],
+  ctx_search_in: wp.array2d[float],
+  ctx_beta_in: wp.array[float],
+  ctx_done_in: wp.array[bool],
+  # solve_done args:
+  nv: int,
+  opt_tolerance: wp.array[float],
+  opt_iterations: int,
+  stat_meaninertia: wp.array[float],
+  ctx_grad_dot_in: wp.array[float],
+  ctx_cost_in: wp.array[float],
+  ctx_prev_cost_in: wp.array[float],
+  # outputs (search_update first, then done):
+  ctx_search_out: wp.array2d[float],
+  ctx_search_dot_out: wp.array[float],
+  solver_niter_out: wp.array[int],
+  nsolving_out: wp.array[int],
+  ctx_done_out: wp.array[bool],
+):
+  """solve_search_update + solve_done in one launch.
+
+  solve_done launches immediately after solve_search_update in the
+  iteration and only reads cost/prev_cost/grad_dot (final long before both),
+  so its per-world bookkeeping can run in work-item (world, 0) alongside
+  the per-dof search update: same values, one fewer launch.
+  """
+  worldid, dofid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  # ── solve_search_update (verbatim) ─────────────────────────────────
+  search = -1.0 * ctx_Mgrad_in[worldid, dofid]
+  if opt_solver == _mw_types.SolverType.CG:
+    search += ctx_beta_in[worldid] * ctx_search_in[worldid, dofid]
+  ctx_search_out[worldid, dofid] = search
+  wp.atomic_add(ctx_search_dot_out, worldid, search * search)
+
+  # ── solve_done (verbatim, single writer at dof 0) ──────────────────
+  if dofid == 0:
+    solver_niter_out[worldid] += 1
+    tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
+    meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
+    improvement = _mw_rescale(nv, meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
+    gradient = _mw_rescale(nv, meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
+    done = (improvement < tolerance) or (gradient < tolerance)
+    if done or solver_niter_out[worldid] == opt_iterations:
+      ctx_done_out[worldid] = True
+      wp.atomic_add(nsolving_out, 0, -1)
+
+
 def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
-  global _CTX
+  global _CTX, _pending_search_update
   if _CTX is not None:
     key = getattr(kernel, "key", None)
     if key == "linesearch_jaref":
@@ -132,6 +201,37 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
       )
     if key in _SUPPRESS:
       return None  # already zeroed by the jaref tail
+
+    # search_update + solve_done merge: defer the per-dof search update,
+    # merge it with the per-world done bookkeeping at solve_done's launch
+    # (the two launches are adjacent in the iteration).
+    if key == "solve_search_update":
+      if _pending_search_update is not None:
+        # unexpected kernel between the pair: keep the original order
+        k, d_, i_, o_, a_, kw_ = _pending_search_update
+        _pending_search_update = None
+        _prev_launch(k, d_, i_, o_, *a_, **kw_)
+      _pending_search_update = (kernel, dim, inputs, outputs, args, kwargs)
+      return None
+    if key == "solve_done" and _pending_search_update is not None:
+      sk, sdim, sin, sout, sargs, skw = _pending_search_update
+      _pending_search_update = None
+      # merged params: search_update's 5 inputs + solve_done's first 7
+      # inputs (its 8th is ctx.done, already in sin[4]), then search_update's
+      # 2 outputs + solve_done's 3 outputs
+      return _prev_launch(
+        _search_done_fused,
+        sdim,
+        list(sin) + list(inputs[:7]),
+        list(sout) + list(outputs),
+        *sargs,
+        **skw,
+      )
+    if _pending_search_update is not None:
+      # any intervening launch must see the original order
+      k, d_, i_, o_, a_, kw_ = _pending_search_update
+      _pending_search_update = None
+      _prev_launch(k, d_, i_, o_, *a_, **kw_)
   return _prev_launch(kernel, dim, inputs, outputs, *args, **kwargs)
 
 

@@ -49,6 +49,19 @@ def _remaining(condition) -> int:
   return struct.unpack("<i", ctypes.string_at(condition.ptr, 4))[0]
 
 
+def _run_batch(while_body, n, kwargs):
+  # A full batch can replay as ONE captured command graph (~264 kernel
+  # submissions collapse to a single queue submit -- see graph_batch.py);
+  # the graph path runs plain and counts the first batch, records the
+  # second, and falls back to this loop on any failure.
+  from mjlab_sycl import graph_batch
+
+  if graph_batch.run_batch(while_body, n, kwargs):
+    return
+  for _ in range(n):
+    while_body(**kwargs)
+
+
 def install_poll_batching() -> None:
   """Wrap wp.capture_while (sycl only) with batched convergence polling."""
   global _orig
@@ -80,8 +93,7 @@ def install_poll_batching() -> None:
     # finds it > 0.  The init_context kernels and the first iteration's
     # kernels are in the same SYCL queue and execute in order, so skipping
     # the drain is safe — we just run the first batch unconditionally.
-    for _ in range(poll_every):
-      while_body(**kwargs)
+    _run_batch(while_body, poll_every, kwargs)
 
     while True:
       # drain so the raw USM read below observes all kernels submitted so far
@@ -91,8 +103,7 @@ def install_poll_batching() -> None:
         return
       # coarse batches while many worlds solve; per-iteration once few remain
       batch = 1 if remaining <= tail else poll_every
-      for _ in range(batch):
-        while_body(**kwargs)
+      _run_batch(while_body, batch, kwargs)
 
   wctx.capture_while = patched
   if hasattr(wp, "capture_while"):

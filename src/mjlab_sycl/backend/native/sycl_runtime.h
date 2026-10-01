@@ -55,6 +55,20 @@ WP_SYCL_API void wp_sycl_memtile(void* dst, const void* src, size_t src_size, si
 // staging call drains the in-order queue so a slot is never overwritten
 // while an in-flight launch still reads it.
 WP_SYCL_API void* wp_sycl_stage_args(size_t size);
+// Command-graph capture/replay of a batch of queue submissions. begin()
+// starts recording every subsequent submission to the shared queue as a
+// graph node (submissions are captured, NOT executed); end() stops
+// recording and finalizes the executable graph; submit() replays the whole
+// batch as one queue submission; free() tears down (drains first, then
+// releases the per-graph argument arena). While recording, stage_args and
+// the memtile pattern ring draw from that dedicated arena instead of the
+// shared ring, so a replayed node can never observe an argument slot that a
+// later launch overwrote. Returns NULL / non-zero on error so callers fall
+// back to per-kernel submits.
+WP_SYCL_API void* wp_sycl_graph_begin();
+WP_SYCL_API int wp_sycl_graph_end(void* handle);
+WP_SYCL_API int wp_sycl_graph_submit(void* handle);
+WP_SYCL_API void wp_sycl_graph_free(void* handle);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

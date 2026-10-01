@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -144,6 +145,48 @@ void drain_and_recycle() {
 
 }  // namespace
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// Command-graph capture/replay (see sycl_runtime.h). While recording, every
+// submission to the shared queue becomes a graph node whose arguments are
+// baked as POINTERS -- a replayed node reads the same USM slots again. The
+// stage_args / memtile rings recycle their slots after kRing submissions, so
+// a later replay would eventually observe another launch's arguments.
+// Recording therefore draws from a dedicated per-graph arena that lives and
+// dies with the graph.
+// ---------------------------------------------------------------------------
+namespace exptl = sycl::ext::oneapi::experimental;
+using mod_graph_t = exptl::command_graph<exptl::graph_state::modifiable>;
+using exec_graph_t = exptl::command_graph<exptl::graph_state::executable>;
+
+struct GraphState {
+    std::optional<mod_graph_t> mod;
+    std::optional<exec_graph_t> exec;
+    std::vector<void*> chunks;  // argument arena blocks, never recycled
+    size_t chunk_off = 0;
+    size_t chunk_cap = 0;
+};
+
+thread_local GraphState* g_recording = nullptr;
+
+void* graph_arena_alloc(GraphState* g, size_t size) {
+    const size_t need = (size + 15) & ~size_t(15);
+    if (g->chunk_off + need > g->chunk_cap) {
+        const size_t cap = need > (size_t(1) << 20) ? need : (size_t(1) << 20);
+        void* p = sycl::malloc_shared(cap, the_queue());
+        if (!p) throw std::runtime_error("wp_sycl: graph argument arena alloc failed");
+        g->chunks.push_back(p);
+        g->chunk_off = 0;
+        g->chunk_cap = cap;
+    }
+    void* out = static_cast<unsigned char*>(g->chunks.back()) + g->chunk_off;
+    g->chunk_off += need;
+    return out;
+}
+
+}  // namespace
+
 extern "C" {
 
 void* wp_sycl_queue_ptr() { return &the_queue(); }
@@ -247,21 +290,29 @@ void wp_sycl_memtile(void* dst, const void* src, size_t src_size, size_t reps) {
     thread_local PatternSlots* slots = nullptr;
     thread_local unsigned long counter = 0;
 
-    if (slots == nullptr) {
-        slots = new PatternSlots();
-    }
-    if (counter != 0 && counter % kPatternRing == 0) {
-        drain_and_recycle();
-    }
-    unsigned char*& pat = slots->ptrs[counter % kPatternRing];
-    if (pat == nullptr) {
-        pat = static_cast<unsigned char*>(sycl::malloc_shared(kPatternCap, the_queue()));
-        if (pat == nullptr) {
-            std::fprintf(stderr, "wp_sycl_memtile: pattern USM alloc failed\n");
-            std::abort();
+    unsigned char* pat = nullptr;
+    if (g_recording != nullptr) {
+        // graph recording: same lifetime rule as stage_args -- the pattern
+        // slot must never be recycled under a future replay
+        pat = static_cast<unsigned char*>(graph_arena_alloc(g_recording, kPatternCap));
+    } else {
+        if (slots == nullptr) {
+            slots = new PatternSlots();
         }
+        if (counter != 0 && counter % kPatternRing == 0) {
+            drain_and_recycle();
+        }
+        pat = slots->ptrs[counter % kPatternRing];
+        if (pat == nullptr) {
+            pat = static_cast<unsigned char*>(sycl::malloc_shared(kPatternCap, the_queue()));
+            if (pat == nullptr) {
+                std::fprintf(stderr, "wp_sycl_memtile: pattern USM alloc failed\n");
+                std::abort();
+            }
+            slots->ptrs[counter % kPatternRing] = pat;
+        }
+        ++counter;
     }
-    ++counter;
     std::memcpy(pat, src, src_size);
 
     unsigned char* d = static_cast<unsigned char*>(dst);
@@ -276,6 +327,11 @@ void wp_sycl_memtile(void* dst, const void* src, size_t src_size, size_t reps) {
 }
 
 void* wp_sycl_stage_args(size_t size) {
+    // Recording a command graph: the slot must outlive every future replay,
+    // so it comes from the graph's private arena instead of the ring below.
+    if (g_recording != nullptr) {
+        return graph_arena_alloc(g_recording, size);
+    }
     // Ring of per-thread staging slots. Kernels are submitted asynchronously,
     // so the host can run ahead of the device: a single buffer would be
     // overwritten while an in-flight kernel still reads it. Slots are reused
@@ -343,6 +399,62 @@ void wp_sycl_synchronize() {
 const char* wp_sycl_device_name() {
     static std::string name = the_queue().get_device().get_info<sycl::info::device::name>();
     return name.c_str();
+}
+
+// ---- command-graph capture/replay (see sycl_runtime.h) --------------------
+
+void* wp_sycl_graph_begin() {
+    try {
+        auto* g = new GraphState();
+        g->mod.emplace(the_queue());
+        g->mod->begin_recording({the_queue()});
+        g_recording = g;
+        return g;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_graph_begin failed: %s\n", e.what());
+        return nullptr;
+    }
+}
+
+int wp_sycl_graph_end(void* handle) {
+    auto* g = static_cast<GraphState*>(handle);
+    if (!g) return -1;
+    g_recording = nullptr;
+    try {
+        g->mod->end_recording();
+        g->exec.emplace(g->mod->finalize());
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_graph_end failed: %s\n", e.what());
+        return -1;
+    }
+}
+
+int wp_sycl_graph_submit(void* handle) {
+    auto* g = static_cast<GraphState*>(handle);
+    if (!g || !g->exec) return -1;
+    try {
+        // watchdog attribution: replay runs the whole batch as one command,
+        // so a hang inside it names the batch instead of one kernel
+        g_last_kernel.store("wp_sycl_graph_batch");
+        the_queue().ext_oneapi_graph(*g->exec);
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_graph_submit failed: %s\n", e.what());
+        return -1;
+    }
+}
+
+void wp_sycl_graph_free(void* handle) {
+    auto* g = static_cast<GraphState*>(handle);
+    if (!g) return;
+    if (g_recording == g) g_recording = nullptr;
+    try {
+        the_queue().wait();  // in-flight replays must finish first
+    } catch (...) {
+    }
+    for (void* p : g->chunks) sycl::free(p, the_queue());
+    delete g;
 }
 
 // CRT helpers expected by generated kernel modules (declared in crt.h).

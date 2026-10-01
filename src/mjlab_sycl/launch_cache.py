@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import time
 import weakref
 from collections import OrderedDict
 
@@ -96,6 +97,13 @@ _STATS = {
   "recurring": 0,
   "recycled": 0,
   "evicted": 0,
+  "slow_adj_cmd": 0,
+  "slow_generic": 0,
+  "slow_tape": 0,
+  "slow_unhashable": 0,
+  "slow_path": 0,
+  "hit_us": 0.0,
+  "slow_us": 0.0,
 }
 # LRU cap: the persistent hot path keeps ~50-100 entries; the rest of the
 # budget covers a few generations of per-substep solver contexts (~15-20
@@ -232,6 +240,7 @@ def _cached_launch(
     except TypeError:
       cached = None
       key = None
+      _STATS["slow_unhashable"] += 1
 
     if key is not None and cached is not None:
       _STATS["hit"] += 1
@@ -242,7 +251,9 @@ def _cached_launch(
       _cache.move_to_end(key)
       hooks, args_struct, bounds = cached
       # bounds was validated non-empty when the entry was built
+      t0 = time.perf_counter()
       hooks.forward(bounds, ctypes.byref(args_struct))
+      _STATS["hit_us"] += (time.perf_counter() - t0) * 1e6
       return
 
     if key is not None:
@@ -274,9 +285,17 @@ def _cached_launch(
             _arg_ref(kernel),
             tuple(_arg_ref(a) for a in fwd_args),
           )
+  elif record_cmd or stream is not None or adjoint:
+    _STATS["slow_adj_cmd"] += 1
+  elif getattr(kernel, "is_generic", False):
+    _STATS["slow_generic"] += 1
+  else:
+    _STATS["slow_tape"] += 1
 
   # Single slow-path exit: the original wp.launch (also the tape-recording
   # path, the TypeError/unhashable-arg path, and every non-hot pattern).
+  _STATS["slow_path"] += 1
+  t0 = time.perf_counter()
   _orig_launch(
     kernel,
     dim,
@@ -292,6 +311,7 @@ def _cached_launch(
     max_blocks,
     block_dim,
   )
+  _STATS["slow_us"] += (time.perf_counter() - t0) * 1e6
   if build_key is not None:
     _build_cache_entry(kernel, ndim, fwd_args, device, block_dim, build_key)
 

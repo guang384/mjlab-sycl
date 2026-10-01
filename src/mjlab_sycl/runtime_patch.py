@@ -33,6 +33,7 @@ from mjlab_sycl import install as _sycl_install
 from mjlab_sycl import launch_cache as _sycl_launch_cache
 from mjlab_sycl import loop_poll as _sycl_loop
 from mjlab_sycl import skip_empty as _sycl_skip_empty
+from mjlab_sycl import solver_ctx as _sycl_solver_ctx
 
 
 _PATCHED = False
@@ -289,6 +290,15 @@ def patch_simulation_for_sycl() -> None:
   # a cache hit on the unfused kernel would skip the zeroing while the
   # suppressed launches stay suppressed.
   _sycl_fused_solver.install()
+
+  # Solver scratch reuse BEFORE fused_linesearch: fused_linesearch wraps
+  # solver.solve with a _CTX-setting shim and must wrap THIS solve
+  # replacement (it calls the wrapped one through the chain), otherwise its
+  # mul_m/jv/teardown fusions go dead.  Reuse the per-solve SolverContext /
+  # step_size_cost / nsolving so every solver kernel keeps a stable
+  # launch-cache key across solves; without this ~28% of launches rebuild
+  # their packed args every step (~65 ms/step of host submit at 4096 envs).
+  _sycl_solver_ctx.install()
 
   # Fused linesearch (after launch_cache/fused_solver so the cache still
   # sees the fused kernels), then skip 0-dim launches (flex/tendon/equality/
