@@ -16,10 +16,18 @@ parity):
 The bundled entries (train, bench, train_viewer, etc.) call
 ``prepare_sycl_runtime_path()`` and ``patch_simulation_for_sycl()`` themselves;
 users should call those functions explicitly rather than relying on import
-side effects.  This module re-exports ``patch_simulation_for_sycl`` for
-convenience.
+side effects.  This module lazily re-exports ``patch_simulation_for_sycl``
+(PEP 562 ``__getattr__``): importing the package pulls in neither warp nor
+mujoco_warp -- runtime_patch (and the whole interceptor stack) loads only
+when the re-export is accessed.
 """
 
-from mjlab_sycl.runtime_patch import patch_simulation_for_sycl
-
 __all__ = ["patch_simulation_for_sycl"]
+
+
+def __getattr__(name: str):
+  if name == "patch_simulation_for_sycl":
+    from mjlab_sycl.runtime_patch import patch_simulation_for_sycl
+
+    return patch_simulation_for_sycl
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

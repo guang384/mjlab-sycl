@@ -174,11 +174,21 @@ def main() -> int:
   # First import of warp now executes the overlaid files.
   import warp
 
-  # 2) place the prebuilt warpsycl.dll in warp's kernel cache
+  # 2) place the prebuilt warpsycl.dll in warp's kernel cache. A live
+  # process holding warp loaded keeps the cached DLL open (WinError 32 on
+  # rewrite): skip the copy when it is already byte-identical, and only
+  # fail when a genuinely different DLL cannot be replaced.
   cache = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NVIDIA", "warp", "Cache", warp.__version__)
   os.makedirs(cache, exist_ok=True)
   dll = os.path.join(backend, "warpsycl.dll")
-  shutil.copy2(dll, os.path.join(cache, "warpsycl.dll"))
+  cached = os.path.join(cache, "warpsycl.dll")
+  if not (os.path.isfile(cached) and _file_sha256(dll) == _file_sha256(cached)):
+    try:
+      shutil.copy2(dll, cached)
+    except PermissionError as e:
+      print(f"[mjlab-sycl] ERROR: cannot replace {cached} ({e}); close the "
+            "process holding it and re-run install", file=sys.stderr)
+      return 1
   print(f"[mjlab-sycl] warpsycl.dll -> {cache}")
 
   # 3) verify the sycl device comes up on the overlaid backend

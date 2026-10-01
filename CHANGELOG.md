@@ -47,6 +47,19 @@ All notable changes to mjlab-sycl.
   −35.0 ± 3.9 ms/step (−12.7%).
 
 ### Changed
+- The 12 interceptor layers now install from a single auditable
+  `_INTERCEPTOR_LAYERS` table in `runtime_patch` — one row per layer, each
+  note recording why the row sits exactly there; the install sequence is
+  verified identical to the previous sequential calls.
+- `import mjlab_sycl` is side-effect free (PEP 562 lazy re-export of
+  `patch_simulation_for_sycl`): the package no longer pulls warp or
+  mujoco_warp at import time.
+- `fused_solver` defers its mujoco_warp imports to `install()` (kernel
+  body globals resolve at first launch). `fused_tree` / `fused_linesearch`
+  cannot do the same — warp evaluates kernel SIGNATURE annotations at
+  decoration time — now recorded as a NOTE in both files.
+- Viewer entries share `viewer_common.snapshot_env0/apply_state`; `play`
+  no longer imports `train_viewer`'s private helpers.
 - README gains a **"Relationship to NVIDIA/warp"** section (not a fork — a
   strictly additive overlay on `warp-lang==1.12.0`; `warp.dll` and the
   CUDA/CPU paths untouched; Apache-2.0 §4(b) notices ship with the files),
@@ -128,6 +141,10 @@ All notable changes to mjlab-sycl.
   both ways) — the old "CPU only" verdict measured just that case.
 
 ### Fixed
+- `install` no longer crashes with WinError 32 when a live process holds
+  the kernel-cache `warpsycl.dll`: an already byte-identical DLL is
+  skipped, and a genuinely different one reports the close-the-holder
+  remediation instead of a traceback.
 - `_bootstrap.py` had been pasted into itself once (~200 duplicated lines;
   the orphan `2.0` at the seam is the paste artifact). The LIVE copy —
   including the eager `warpsycl.dll` preload fix, which had landed only in

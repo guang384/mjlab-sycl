@@ -283,78 +283,13 @@ def patch_simulation_for_sycl() -> None:
   # Do NOT re-assign here — a blanket drained(orig_forward) would overwrite
   # the lite_forward that skips the solver in the final forward call.
 
-  # barrier-free flat rewrites of the hottest tiled kernels
-  flat_kernels.install()
-  install_skip_decoration_sites()
-
-  # cached wp.launch: skip pack_arg/invoke/ArgsStruct for repeated
-  # (kernel, args, dim) launches (~1500/step in the physics hot path,
-  # ~48% of step time is host-side launch overhead). Installed after
-  # flat_kernels so its wp.launch re-routes also benefit from the cache.
-  _sycl_launch_cache.install()
-
-  # Fused tree chains: one launch per chain invocation instead of one per
-  # kinematic depth level (7 levels per invocation: ~210 -> 30 launches/step).
-  _sycl_fused_tree.install()
-
-  # Fused solver zero/rotate launches: the four per-iteration zero kernels
-  # fold into the tail of linesearch_jaref.  MUST be installed after
-  # launch_cache (outer layer) so the cache sees the fused jaref kernel —
-  # a cache hit on the unfused kernel would skip the zeroing while the
-  # suppressed launches stay suppressed.
-  _sycl_fused_solver.install()
-
-  # Solver scratch reuse BEFORE fused_linesearch: fused_linesearch wraps
-  # solver.solve with a _CTX-setting shim and must wrap THIS solve
-  # replacement (it calls the wrapped one through the chain), otherwise its
-  # mul_m/jv/teardown fusions go dead.  Reuse the per-solve SolverContext /
-  # step_size_cost / nsolving so every solver kernel keeps a stable
-  # launch-cache key across solves; without this ~28% of launches rebuild
-  # their packed args every step (~65 ms/step of host submit at 4096 envs).
-  _sycl_solver_ctx.install()
-
-  # Rollout inference: closed-form Gaussian sample/log_prob instead of the
-  # torch.distributions machinery (~9 ms/act call at 4096 envs -> ~1 ms).
-  _sycl_act_fuse.install()
-
-  # Fused linesearch (after launch_cache/fused_solver so the cache still
-  # sees the fused kernels), then skip 0-dim launches (flex/tendon/equality/
-  # limit when the model has none) as the OUTERMOST layer: installed last so
-  # its _prev_launch captures the whole interceptor chain and no inner
-  # interceptor ever sees a suppressed launch.
-  _sycl_fused_ls.install()
-  _sycl_skip_empty.install()
-
-  # Fused set_const_0: selective per-world recompute of model constants
-  # after domain randomization. The reset path (fall -> event ->
-  # recompute_constants) recomputes ALL worlds for a handful of reset ones;
-  # the selective kernel cuts that 50 -> 10 ms/step at 4096 envs with
-  # random actions, and even the all-worlds case is a wash (66 ms both --
-  # the old "CPU only" verdict measured just that case).  Default-on for
-  # every sim device; MJLAB_SYCL_FUSED_SET_CONST=0 falls back.
-  from mjlab_sycl import fused_set_const
-  fused_set_const.install()
-  # fused_solver_tail stays CPU-only: it serializes the per-world CG tail
-  # and the GPU prefers the original parallel kernels (CG is rare here).
-  _is_cpu_sim = os.environ.get("MJLAB_SYCL_SIM_DEVICE", "sycl").strip().lower() == "cpu"
-  if _is_cpu_sim or os.environ.get("MJLAB_SYCL_FUSED_SOLVER_TAIL", "").strip().lower() in ("1", "true", "on"):
-    from mjlab_sycl import fused_solver_tail
-    fused_solver_tail.install()
-
-  # batched convergence polling for the sycl capture_while fallback.  SYCL
-  # has no graph capture, so wp.capture_while emulates a loop that drains the
-  # queue and reads the 1-int condition every iteration (up to 8 solver
-  # iterations x 4 substep solves = 32 drains/step just to poll).  Batched
-  # polling runs poll_every iterations per drain instead; with the default 8
-  # (>= the iteration cap) the whole solve is one batch, so each solve costs
-  # exactly one drain -- at solve end, which is also the sync covering the
-  # in-loop host reads described above.  Physics is bit-identical either way:
-  # extra iterations are guarded no-ops (ctx.done flag).  Override with
-  # MJLAB_SYCL_POLL_EVERY=N (1 polls every iteration, i.e. warp's original
-  # behavior).
-  if not os.environ.get("MJLAB_SYCL_POLL_EVERY"):
-    os.environ["MJLAB_SYCL_POLL_EVERY"] = "8"
-  _sycl_loop.install_poll_batching()
+  # Interceptor stack (launch wrappers + solver re-points). The order is
+  # load-bearing: each layer only sees what the layers above it left in
+  # place, and several fusions go silently dead if a row moves. The full
+  # ordered table with per-row rationale lives in _INTERCEPTOR_LAYERS at the
+  # bottom of this module.
+  for _installer, _why in _INTERCEPTOR_LAYERS:
+    _installer()
 
 
 def install_skip_decoration_sites() -> None:
@@ -370,3 +305,127 @@ def install_skip_decoration_sites() -> None:
   cls = _te.TerrainEntity
   for name in ("_add_env_origin_sites", "_add_terrain_origin_sites", "_add_flat_patch_sites"):
     setattr(cls, name, lambda self: None)
+
+
+def _install_fused_set_const() -> None:
+  from mjlab_sycl import fused_set_const
+
+  fused_set_const.install()
+
+
+def _install_fused_solver_tail_if_wanted() -> None:
+  cpu_sim = os.environ.get("MJLAB_SYCL_SIM_DEVICE", "sycl").strip().lower() == "cpu"
+  if cpu_sim or os.environ.get("MJLAB_SYCL_FUSED_SOLVER_TAIL", "").strip().lower() in (
+      "1",
+      "true",
+      "on",
+  ):
+    from mjlab_sycl import fused_solver_tail
+
+    fused_solver_tail.install()
+
+
+def _install_batched_polling() -> None:
+  # default poll_every=8 >= the solver iteration cap, so a whole solve polls
+  # once -- at solve end, which doubles as the sync covering in-loop host
+  # reads (see the step/sense wrapper comments above)
+  if not os.environ.get("MJLAB_SYCL_POLL_EVERY"):
+    os.environ["MJLAB_SYCL_POLL_EVERY"] = "8"
+  _sycl_loop.install_poll_batching()
+
+
+# The interceptor stack, in the one order that keeps every fusion live.
+# Layers wrap wp.launch (or re-point solver internals), so each layer only
+# sees what the rows above it left in place; the note on each row records
+# why it sits exactly here. Do not reorder without re-reading the notes --
+# several fusions go silently dead (correct output, lost speedup) if a row
+# moves. Installed by patch_simulation_for_sycl().
+_INTERCEPTOR_LAYERS = (
+    (
+        flat_kernels.install,
+        "Barrier-free flat rewrites of mujoco_warp's hottest tiled kernels "
+        "(JTDAJ, contact_jac, cholesky variants). First, so every launch "
+        "wrapper below intercepts the re-routed kernels, not the originals.",
+    ),
+    (
+        install_skip_decoration_sites,
+        "Drop mjlab's decorative terrain sites at model build time (~4100 "
+        "sites at 4096 envs, ~140 ms/step of _site_local_to_global). Not a "
+        "launch wrapper; placement is free.",
+    ),
+    (
+        _sycl_launch_cache.install,
+        "Cached wp.launch for repeated (kernel, args, dim) -- ~1500/step in "
+        "the physics hot path where ~48% of step time is host-side submit "
+        "overhead. After flat_kernels so its re-routes also benefit.",
+    ),
+    (
+        _sycl_fused_tree.install,
+        "Fused tree chains: one launch per chain invocation instead of one "
+        "per kinematic depth level (7 levels per invocation, ~210 -> 30 "
+        "launches/step).",
+    ),
+    (
+        _sycl_fused_solver.install,
+        "The four per-iteration zero/rotate launches fold into "
+        "linesearch_jaref's tail (~160 launches/memsets per step). MUST sit "
+        "after launch_cache (outside the cache) so the cache sees the FUSED "
+        "jaref kernel -- a cache hit on the unfused one would skip the "
+        "zeroing while the suppressed launches stay suppressed.",
+    ),
+    (
+        _sycl_solver_ctx.install,
+        "Reuse the per-solve SolverContext/step_size_cost/nsolving scratch "
+        "so every solver kernel keeps a stable launch-cache key across "
+        "solves (~28% of launches would otherwise rebuild packed args every "
+        "step, ~65 ms/step of host submit at 4096 envs). Must run BEFORE "
+        "fused_linesearch: its solve shim wraps THIS solve replacement, or "
+        "its mul_m/jv/teardown fusions go dead.",
+    ),
+    (
+        _sycl_act_fuse.install,
+        "Rollout act path: closed-form Gaussian sample/log_prob instead of "
+        "torch.distributions (~9 ms -> ~1 ms per act call at 4096 envs). "
+        "Independent of the launch chain.",
+    ),
+    (
+        _sycl_fused_ls.install,
+        "Linesearch fusions (teardown, mv+jv, prepare-gauss+quad), after "
+        "launch_cache/fused_solver so the cache still sees the fused "
+        "kernels.",
+    ),
+    (
+        _sycl_skip_empty.install,
+        "Skip 0-dim launches (flex/tendon/equality/limit rows the model "
+        "doesn't have, ~120 wasted dispatches/step) as the OUTERMOST layer: "
+        "installed last among the launch wrappers so its _prev_launch "
+        "captures the whole interceptor chain and no inner interceptor ever "
+        "sees a suppressed launch.",
+    ),
+    (
+        _install_fused_set_const,
+        "Selective per-world set_const recompute after domain rand: the "
+        "reset path (fall -> event -> recompute_constants) recomputes ALL "
+        "worlds for a handful of reset ones; 50 -> 10 ms/step at 4096 envs "
+        "(all-worlds case is a wash). MJLAB_SYCL_FUSED_SET_CONST=0 falls "
+        "back.",
+    ),
+    (
+        _install_fused_solver_tail_if_wanted,
+        "Fuse the per-iteration CG-tail kernels (prev_grad/beta/zero/"
+        "search_update/done -> 1 launch). CPU-sim only by default: it "
+        "serializes the per-world tail and the GPU prefers the original "
+        "parallel kernels (CG is rare here); MJLAB_SYCL_FUSED_SOLVER_TAIL=1 "
+        "opts in on any device.",
+    ),
+    (
+        _install_batched_polling,
+        "Batched convergence polling for the sycl capture_while fallback "
+        "(SYCL has no graph capture; warp's emulation drains per iteration, "
+        "up to 8 iter x 4 substeps = 32 drains/step just to poll). Default "
+        "poll_every=8 makes a whole solve one batch: exactly one drain per "
+        "solve, bit-identical physics (extra iterations are guarded no-ops "
+        "via ctx.done). MJLAB_SYCL_POLL_EVERY=1 restores warp's original "
+        "per-iteration polling.",
+    ),
+)

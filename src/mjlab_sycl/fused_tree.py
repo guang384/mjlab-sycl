@@ -43,6 +43,12 @@ import weakref
 import numpy as np
 import warp as wp
 
+# NOTE: unlike fused_solver (whose kernels only reference mujoco_warp symbols
+# in their bodies), the fused kernels here annotate their SIGNATURES with
+# mujoco_warp types (wp.array2d[vec10]) -- and warp evaluates kernel
+# signature annotations at decoration time (codegen.get_full_arg_spec ->
+# inspect.get_annotations(eval_str=True)), so these imports cannot be
+# deferred to install(). See also fused_linesearch.py (same constraint).
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import vec10
 

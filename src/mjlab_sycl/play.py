@@ -31,7 +31,7 @@ import mujoco  # noqa: E402
 import mujoco.viewer  # noqa: E402
 
 from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
-from mjlab_sycl.train_viewer import _apply_state, _snapshot_env0  # noqa: E402
+from mjlab_sycl.viewer_common import apply_state, snapshot_env0  # noqa: E402
 
 
 def main() -> None:
@@ -78,8 +78,8 @@ def main() -> None:
   mj_model = env.unwrapped.sim.mj_model
   mj_data = mujoco.MjData(mj_model)
   env.reset()
-  state = _snapshot_env0(env)
-  _apply_state(mj_model, mj_data, state)
+  state = snapshot_env0(env)
+  apply_state(mj_model, mj_data, state)
 
   try:
     viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
@@ -114,7 +114,7 @@ def main() -> None:
       with lock:
         snap = state
       try:
-        _apply_state(mj_model, mj_data, snap)
+        apply_state(mj_model, mj_data, snap)
         viewer.cam.lookat[:] = (float(snap["qpos"][0]), float(snap["qpos"][1]), 0.15)
         viewer.sync()
       except Exception:
@@ -141,7 +141,7 @@ def main() -> None:
 
       try:
         with lock:
-          state = _snapshot_env0(env)
+          state = snapshot_env0(env)
       except Exception:
         pass
 

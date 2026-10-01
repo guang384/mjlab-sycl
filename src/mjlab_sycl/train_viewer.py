@@ -40,27 +40,7 @@ import mujoco  # noqa: E402
 import mujoco.viewer  # noqa: E402  (binds mujoco.viewer for launch_passive)
 
 from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
-
-
-def _snapshot_env0(env) -> dict:
-  # Call after env.step (sim queue drained): fresh small arrays, swapped in
-  # atomically so a concurrent watcher never sees a torn state.
-  d = env.unwrapped.sim.data
-  t = d.time
-  return {
-    "qpos": d.qpos.numpy()[0].copy(),
-    "qvel": d.qvel.numpy()[0].copy(),
-    "ctrl": d.ctrl.numpy()[0].copy(),
-    "t": float(t.numpy()[0]) if hasattr(t, "numpy") else float(t),
-  }
-
-
-def _apply_state(mj_model, mj_data, state) -> None:
-  mj_data.qpos[:] = state["qpos"]
-  mj_data.qvel[:] = state["qvel"]
-  mj_data.ctrl[:] = state["ctrl"]
-  mj_data.time = state["t"]
-  mujoco.mj_forward(mj_model, mj_data)  # refresh visual transforms
+from mjlab_sycl.viewer_common import apply_state, snapshot_env0  # noqa: E402
 
 
 def main() -> None:
@@ -104,7 +84,7 @@ def main() -> None:
   # -- env-0 snapshot plumbing -------------------------------------------------
   mj_model = env.unwrapped.sim.mj_model
   mj_data = mujoco.MjData(mj_model)
-  state = _snapshot_env0(env)
+  state = snapshot_env0(env)
   lock = threading.Lock()
   stop = threading.Event()
 
@@ -118,7 +98,7 @@ def main() -> None:
   if viewer is not None:
     # envs live on a ~60 m terrain grid (env 0 is NOT at the origin). Point
     # the free camera at env 0; the watcher keeps it centered as env 0 moves.
-    _apply_state(mj_model, mj_data, state)
+    apply_state(mj_model, mj_data, state)
     try:
       viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
       viewer.cam.azimuth = 120.0
@@ -140,7 +120,7 @@ def main() -> None:
       with lock:
         snap = state
       try:
-        _apply_state(mj_model, mj_data, snap)
+        apply_state(mj_model, mj_data, snap)
         viewer.cam.lookat[:] = (float(snap["qpos"][0]), float(snap["qpos"][1]), 0.15)
         viewer.sync()
       except Exception:
@@ -161,7 +141,7 @@ def main() -> None:
     out = orig_step(action)
     try:
       with lock:
-        state = _snapshot_env0(env)  # cheap: ~300 floats after the sim drain
+        state = snapshot_env0(env)  # cheap: ~300 floats after the sim drain
     except Exception:
       pass  # snapshot failure must never stall training
     return out

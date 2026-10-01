@@ -45,6 +45,13 @@ from __future__ import annotations
 import os
 
 import warp as wp
+
+# NOTE: unlike fused_solver (whose kernels only reference mujoco_warp symbols
+# in their bodies), the fused kernels here annotate their SIGNATURES with
+# mujoco_warp types (wp.array[_mw_types.vec5]) -- and warp evaluates kernel
+# signature annotations at decoration time (codegen.get_full_arg_spec ->
+# inspect.get_annotations(eval_str=True)), so this import cannot be deferred
+# to install(). See also fused_tree.py (same constraint).
 from mujoco_warp._src import types as _mw_types
 
 _prev_launch = None

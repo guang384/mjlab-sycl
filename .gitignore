@@ -7,6 +7,7 @@ logs/
 .temp/
 .pytest_cache/
 *.whl
+.zcode/
 
 # rebuild byproducts of warpsycl.dll (/LD emits import lib + export file)
 src/mjlab_sycl/backend/warpsycl.lib

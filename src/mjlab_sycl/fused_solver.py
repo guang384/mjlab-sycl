@@ -56,8 +56,16 @@ from __future__ import annotations
 import os
 
 import warp as wp
-from mujoco_warp._src import types as _mw_types
-from mujoco_warp._src.solver import _rescale as _mw_rescale
+
+# The two mujoco_warp references used inside the _search_done_fused kernel
+# BODY. Warp evaluates kernel signature annotations at decoration time (see
+# fused_tree.py's NOTE) but resolves body-only global references later, so
+# these just need to be populated before the kernel can ever launch -- which
+# install(), below, guarantees. That keeps this module importable without
+# mujoco_warp (fused_tree/fused_linesearch cannot do the same: their kernel
+# signatures themselves use mujoco_warp types).
+_mw_types = None
+_mw_rescale = None
 
 _CTX = None  # active SolverContext while a fused iteration runs
 _SUPPRESS = frozenset(
@@ -236,14 +244,19 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
 
 
 def install() -> None:
-  global _prev_launch, _orig_solver_iteration
+  global _prev_launch, _orig_solver_iteration, _mw_types, _mw_rescale
   if _prev_launch is not None:
     return
   if not _enabled():
     return
   from mujoco_warp._src import solver
+  from mujoco_warp._src import types as _types
+  from mujoco_warp._src.solver import _rescale as _rescale
   from mujoco_warp._src.types import ConeType
   from mujoco_warp._src.types import SolverType
+  # kernel-body globals (see the comment at their declaration)
+  _mw_types = _types
+  _mw_rescale = _rescale
 
   _prev_launch = wp.launch
   wp.launch = _intercept_launch
