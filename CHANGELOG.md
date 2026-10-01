@@ -139,6 +139,17 @@ All notable changes to mjlab-sycl.
   at 4096 envs with active policies, **+17% end-to-end (13,458 → 15,762
   env-steps/s)**. Even the all-worlds case is a wash on the GPU (66 ms
   both ways) — the old "CPU only" verdict measured just that case.
+- `docs/performance.md` correction: the efc-buffer-padding note ("46 real
+  vs 1504 compiled rows, ~33x idle") sat under "known device-side costs
+  (out of adapter reach)" but adaptive njmax has been default-on since
+  2026-09-30 — it landed uncredited inside the launch-cache commit,
+  shrinking the task cfg's njmax=1500 to `max(baseline_nefc*16, nq*8, 96)`
+  = 168 (buffer 176 rows). Moved to the attempts table with a fresh
+  back-to-back A/B (12.05 -> 7.01 s/iter, 1.72x, ppo unchanged; 8,765 ->
+  15,918 env-steps/s) and the reason shrinking below ~128 is a dead end
+  (compute is already nefc-bounded; undersized buffers drop constraints
+  silently -> NaN). Warm-device 2026-10-02 headline row added (15,918
+  env-steps/s, consistent with the thermal attribution).
 
 ### Fixed
 - `install` no longer crashes with WinError 32 when a live process holds

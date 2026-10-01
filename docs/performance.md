@@ -30,6 +30,7 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 |---|---|---|
 | sycl, PPO on **xpu** (default), selective-recompute refresh (2026-09-30) | mean 7.1 s (rollout 6.2 / ppo 0.9) | **15,762** |
 | sycl, PPO on **xpu** (default), 2026-10-01 re-check (3 runs, cold start) | mean 8.6 s (rollout 7.4 / ppo 1.2) | 13,276 |
+| sycl, PPO on **xpu** (default), 2026-10-02 re-check (warm device, 3 iters) | mean 7.0 s (rollout 6.2 / ppo 0.8) | 15,918 |
 | sycl, PPO on **xpu** (default), graph-batch refresh (2026-09-30) | mean 8.3 s (rollout 7.3 / ppo 1.0) | 13,390 |
 | sycl, PPO on **xpu** (default), flat-kernel v2 refresh (2026-09-30, 2 runs) | mean 9.1 – 9.4 s | 11,835 – 11,940 |
 | sycl, PPO on **xpu** (default), post-fusion (2026-09-30, 3 runs) | mean 10.2 – 17.1 s (run-to-run clock variance) | 6,301 – 10,782 |
@@ -49,7 +50,8 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
   costs ~20 %.  Per-kernel serialized time is up ~17 % (359 vs 308 ms/step)
   with an IDENTICAL kernel mix and call counts (cholesky 44 calls/step,
   32 solver iterations/step, same share per family), so the gap vs the
-  09-30 best is device clock/thermal state, not workload or code.  The
+  09-30 best is device clock/thermal state, not workload or code (a
+  warm-device run on 2026-10-02 landed back at 7.0 s/iter).  The
   compute engine sits at ~97 % busy during the bench (GPU-bound); desktop
   compositing (dwm/ZCode/TeleAgent) holds ~20 % of the shared 3D engine in
   both sessions -- constant contention, not the variable.  Read every
@@ -116,6 +118,7 @@ default — kept for attribution):
 | batched convergence polling — small cadence (poll < iteration cap) | 716 vs 671 ms/step: the extra guard no-op iterations cost more than the polls saved | dead end |
 | batched convergence polling — cadence = iteration cap (poll_every=8) | 1 poll/solve instead of every iteration; with the lite-forward restore, env.step 370 -> 306 ms (−17 %) | kept (default-on) |
 | launch cache + tree/solver/linesearch fusion + 0-dim launch skip | 1,600 -> 938 launches/step (−35 %), part of 670 -> ~330 ms/step | kept (default-on, `MJLAB_SYCL_*` kill switches) |
+| adaptive njmax (the task cfg pinned njmax=1500 -> 1504 padded vs peak real nefc 46; the runtime patch measures baseline nefc via mj_forward and shrinks to max(nefc\*16, nq\*8, 96) = 168 -> pad 176, never raising a caller-set value; `MJLAB_SYCL_NJMAX=N`/`=0` knob; landed inside the launch-cache commit) | back-to-back A/B 2026-10-02 @4096 (3 iters): rollout 11.22 -> 6.18 s, ppo unchanged (0.83/0.84), total 12.05 -> 7.01 s/iter (1.72x; 8,765 -> 15,918 env-steps/s); also frees ~0.9 GB of `efc.J` @4096 | kept (default-on since 2026-09-30; supersedes the 2026-09-09 "33x idle" audit that sat in "known device-side costs". Shrinking below ~128 is a dead end: flat/fused kernels already iterate min(nefc, njmax), only full-buffer zeroing scales with njmax (<1 %), and an undersized buffer drops constraints silently -> NaN -- microduck rolls at nefc ~122) |
 | flat-kernel v2: per-element JTDAJ dot, unrolled dense cholesky, LLT skip on unchanged constraints | serialized kernel time 435 -> 308 ms/step; env.step median ~330 -> ~270 ms | kept (same `MJLAB_SYCL_FLAT_JTDAJ` switch) |
 | solver scratch reuse (SolverContext/step_size_cost/nsolving across solves) | launch-cache hit rate 60 -> 81 %, slow rebuild path halved; +2-3 % throughput | kept (`MJLAB_SYCL_SOLVER_CTX`) |
 | command-graph batch replay (solver 8-iteration batch as one submission) | paired A/B −35.0 ± 3.9 ms/step (−12.7 %) | kept (`MJLAB_SYCL_GRAPH`) |
@@ -135,9 +138,6 @@ default — kept for attribution):
 
 ## Known device-side costs (out of adapter reach)
 
-- **efc buffer padding**: peak real efc/world = 46 vs compiled buffer 1504 rows
-  (~33x idle). Shrinking needs model-level `<size njmax>` (microduck MJCF) or a
-  mujoco_warp compile change; see scripts/probe_efc_audit.py.
 - Kernel time leaders (serialized ranking @4096): update_constraint_efc,
   cholesky solves, linesearch family (jv/prepare_quad/jaref), flat JTDAJ/contact.
 
