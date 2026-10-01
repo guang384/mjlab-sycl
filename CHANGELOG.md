@@ -8,6 +8,15 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- `docs/optimization_ideas.md`: argued-but-unattempted kernel-level
+  optimization candidates (oneMKL batched cholesky, sub_group LLT, jv
+  row-block parallelism, whole-substep command graphs, efc-cost atomic
+  elimination, ghost-iteration world compaction) with feasibility, safety
+  and numerics analysis per item — plus two facts measured while arguing:
+  the kernel-time probe attributes fused executions to pre-fusion names
+  (identity must be checked via launch-cache keys), and a `max_unroll`
+  sweep is a measured dead end (unroll 64→8 makes the cholesky kernels
+  94x slower; full unrolling is load-bearing).
 - pytest configuration: `[tool.pytest.ini_options]` `testpaths` points at
   the host-only overlay gate (a bare `pytest` no longer collects the
   in-package GPU test modules), and pytest is declared as a `test` extra.
