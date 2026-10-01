@@ -44,11 +44,16 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 - sycl vs same-stack pure CPU device: **~14x** (3436 vs 246 env-steps/s @1024).
 - Env-count scaling is flat beyond ~4096 (device saturated; doubling envs doubles
   per-step wall -> same samples/s).
-- 2026-10-01 re-check: cold-start runs land at 8.4-8.7 s/iter, ~20 % off the
-  09-30 best; after ~40 min of sustained GPU load the same binary measured
-  9.9-10.1 s. A same-process paired A/B of the (wall-neutral) drain fix saw
-  none of that gap, so treat session/thermal state as a +-20 % error bar on
-  every number in this file.
+- 2026-10-01 re-check: cold-start runs land at 8.4-8.7 s/iter, and a 5 min
+  cooldown recovers 8.65 s from a heat-soaked 9.9-10.5 s -- sustained load
+  costs ~20 %.  Per-kernel serialized time is up ~17 % (359 vs 308 ms/step)
+  with an IDENTICAL kernel mix and call counts (cholesky 44 calls/step,
+  32 solver iterations/step, same share per family), so the gap vs the
+  09-30 best is device clock/thermal state, not workload or code.  The
+  compute engine sits at ~97 % busy during the bench (GPU-bound); desktop
+  compositing (dwm/ZCode/TeleAgent) holds ~20 % of the shared 3D engine in
+  both sessions -- constant contention, not the variable.  Read every
+  number in this file with a +-20 % session/thermal error bar.
 
 ## Where env.step goes (census)
 
@@ -121,6 +126,8 @@ default — kept for attribution):
 | lite forward as one command graph (`graph_batch.run_sequence`) | ~15 submits/step -> 1; wall-neutral | kept (`MJLAB_SYCL_GRAPH`) |
 | sense() drain merge (sensor context already drains in finalize) | 8 -> 7 drains/step, no measurable wall change | kept |
 | Bvh pre-drain removal (runtime_patch wrapper; the overlay's Bvh.__init__/refit already drain sycl instances) | 8 -> 7 drains/step as designed; paired A/B old-new +2.4 ± 14.4 ms/step (n=5, ns) | kept (wall-neutral, one less sync) |
+| solver iteration cap 8 -> 6 (`MJLAB_SYCL_ITER=6`) | -3.7 % (8.33 vs 8.65 s/iter, back-to-back; run noise is larger) -- the batch still runs POLL_EVERY=8 slots so only slots 7-8 shrink; e2e gates pass unchanged (3.3e-06) | kept as a knob, NOT default-on: less-converged solves for the 22 % of worlds that hit the cap -- validate policy quality before training with it |
+| poll batch matched to the smaller cap (`MJLAB_SYCL_POLL_EVERY=6` with ITER=6) | no win over ITER=6 alone (extra guard batches again), consistent with the small-cadence verdict above | dead end |
 | kernel args by-value capture (codegen) | ~1 % (noise); DPC++ also requires const kernel lambdas | dead end, reverted |
 | 8192 envs | +2.7 % | not worth wall 2x |
 | solver micro-kernel fusion (Route C) | infeasible here: fusion points need intra-world sync (barriers) which must never be added on the iGPU; only tiny per-world scalar merges remain (~1-2 %) | not viable, documented |
