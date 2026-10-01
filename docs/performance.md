@@ -26,6 +26,7 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 
 | config (4096 envs unless noted) | per-iteration wall | env-steps/s |
 |---|---|---|
+| sycl, PPO on **xpu** (default), graph-batch refresh (2026-09-30) | mean 8.3 s (rollout 7.3 / ppo 1.0) | **13,390** |
 | sycl, PPO on **xpu** (default), flat-kernel v2 refresh (2026-09-30, 2 runs) | mean 9.1 – 9.4 s | 11,835 – 11,940 |
 | sycl, PPO on **xpu** (default), post-fusion (2026-09-30, 3 runs) | mean 10.2 – 17.1 s (run-to-run clock variance) | 6,301 – 10,782 |
 | sycl, PPO on **cpu** | 23.7 s (rollout 19.1 / ppo 4.5) | 5,140 |
@@ -41,14 +42,33 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 
 ## Where env.step goes (census)
 
-Current (launch-fusion suite + flat-kernel v2 + default-on polling,
-measured 2026-09-30, 4096 envs):
+Current (launch-fusion suite + flat-kernel v2 + command-graph batch
+replay, measured 2026-09-30, 4096 envs):
 
-- median ≈ 270-280 ms/env.step (40-step runs, 5 warmup; run-to-run spread
-  ±15 ms depending on system state)
-- ~938 kernel launches/step (was ~1,600 before the fusion suite)
+- median ≈ 210 ms/env.step (paired A/B: graph replay worth
+  −35.0 ± 3.9 ms/step, 5 pairs, t = −20)
+- ~938 kernel launches/step, of which the solver's ~264-iteration batch
+  replays as ONE graph submission (4 graphs/step replace ~1,056
+  per-kernel submits)
 - 7 queue drains/step: 4 solve-end convergence polls + lite forward +
   Bvh refit + sensor finalize; ~7 % of wall waiting in drains
+
+Budget map (measured 2026-09-30 with true per-kernel launch counts --
+cache hits bypass launch hooks, so hook-based counts under-sample ~3x):
+
+- The Newton loop runs the full 8-iteration cap on all 4 substep solves
+  (32 iterations/step); mean useful iterations per solve is 4.3 and 22% of
+  worlds reach the cap, so ~45% of iteration slots are ghost work that
+  cannot be dropped without changing numerics.
+- Device time (wall is device-bound): cholesky factorize+solve ~18%
+  (45 calls/step, ~1 ms each -- the serial LLT chain already runs at
+  ~2 cycles/inner-iteration), constraint linearization (efc/jaref/init/
+  gauss) ~15%, linesearch family (jv/quad/parallel) ~20%, Hessian builds
+  (JTDAJ + h_incremental) ~10%, collision/kinematics/sensors ~15%.
+- ~20 us of queue-submit overhead per kernel x ~1070 launches/step ≈ 8%.
+- Host-side launch cost is GPU-queue backpressure in disguise: the pure
+  enqueue floor measured on an idle queue is 20-45 us (raw pack ~45 us),
+  while in-workload "submit" times reach 300+ us.
 
 Historical (2026-09-08 baseline, before the fusion suite and poll
 default — kept for attribution):
@@ -70,6 +90,9 @@ default — kept for attribution):
 | batched convergence polling — cadence = iteration cap (poll_every=8) | 1 poll/solve instead of every iteration; with the lite-forward restore, env.step 370 -> 306 ms (−17 %) | kept (default-on) |
 | launch cache + tree/solver/linesearch fusion + 0-dim launch skip | 1,600 -> 938 launches/step (−35 %), part of 670 -> ~330 ms/step | kept (default-on, `MJLAB_SYCL_*` kill switches) |
 | flat-kernel v2: per-element JTDAJ dot, unrolled dense cholesky, LLT skip on unchanged constraints | serialized kernel time 435 -> 308 ms/step; env.step median ~330 -> ~270 ms | kept (same `MJLAB_SYCL_FLAT_JTDAJ` switch) |
+| solver scratch reuse (SolverContext/step_size_cost/nsolving across solves) | launch-cache hit rate 60 -> 81 %, slow rebuild path halved; +2-3 % throughput | kept (`MJLAB_SYCL_SOLVER_CTX`) |
+| command-graph batch replay (solver 8-iteration batch as one submission) | paired A/B −35.0 ± 3.9 ms/step (−12.7 %) | kept (`MJLAB_SYCL_GRAPH`) |
+| iteration-kernel merges (prepare_gauss→prepare_quad, solve_done→search_update) | wall-neutral with graphs on (±4.5 ms), fewer kernels/launches | kept (same fusion switches) |
 | sense() drain merge (sensor context already drains in finalize) | 8 -> 7 drains/step, no measurable wall change | kept |
 | kernel args by-value capture (codegen) | ~1 % (noise); DPC++ also requires const kernel lambdas | dead end, reverted |
 | 8192 envs | +2.7 % | not worth wall 2x |

@@ -26,6 +26,15 @@ All notable changes to mjlab-sycl.
 - `_bootstrap` preloads oneAPI SYCL DLLs before torch-xpu can pin the pip
   copies, so every entry point sees one consistent SYCL runtime.
 - CI installs numpy in the CPU-side job (warp needs it at import).
+- Command-graph batch replay (`graph_batch.py`, `MJLAB_SYCL_GRAPH`): the
+  solver's 8-iteration batch (~264 kernel submissions) is captured as a
+  SYCL command graph — new warpsycl.dll API (`wp_sycl_graph_begin/end/
+  submit/free`) — and replayed as ONE queue submission. Argument staging
+  during capture draws from a per-graph arena (never the shared ring), so
+  a replayed node cannot observe a recycled slot. Replay arms only after
+  the launch count verifies the batch sequence is static; any argument
+  churn falls back to per-kernel submits. Paired A/B (5 pairs, t = −20):
+  −35.0 ± 3.9 ms/step (−12.7%).
 
 ### Changed
 - **Batched convergence polling is now default-on** (`MJLAB_SYCL_POLL_EVERY=8`,
@@ -55,6 +64,19 @@ All notable changes to mjlab-sycl.
     path too (nv ≤ 32): when no constraint state changed since the last
     factorization, the LLT is skipped and only the triangular solves run
     (upstream only cached the factorization for nv > 32).
+    `MJLAB_SYCL_LLT_SKIP=0` force-disables the skip for A/B testing.
+- Solver scratch reuse (`solver_ctx.py`, `MJLAB_SYCL_SOLVER_CTX`):
+  `solver.solve()` allocated a fresh SolverContext plus step_size_cost and
+  nsolving on every call (4/step), so every solver kernel got a fresh
+  launch-cache key each solve — the cache re-ran its recurrence gate and
+  rebuild path before hits resumed (~28% of launches on the slow path).
+  The context is scratch state re-initialized per solve; reusing the
+  allocations keeps keys stable (cache hit rate 60% → 81%, slow path
+  halved). +2–3% throughput. Installed before `fused_linesearch` so that
+  module's `solver.solve` shim wraps this replacement — wrapping the other
+  way round silently disabled its mul_m/jv/teardown fusions.
+- `launch_cache.stats()` now reports slow-path reasons and per-path µs
+  totals, making cache behavior measurable instead of opaque.
 - `sense()` drains only when there is no sensor context — with one,
   `SensorContext.finalize()` drains before its torch-only host reads and
   `sense()` launches nothing afterwards. −1 queue drain/env.step
@@ -67,6 +89,12 @@ All notable changes to mjlab-sycl.
 - Comments reconciled with code across runtime_patch, loop_poll,
   flat_kernels, fused_tree, fused_linesearch, bench, README (drain sites,
   tile padding, install ordering, gate count, drain/launch arithmetic).
+- Two more iteration-kernel merges (`MJLAB_SYCL_FUSED_LINESEARCH` /
+  `MJLAB_SYCL_FUSED_SOLVER`): `linesearch_prepare_gauss` folded into
+  `prepare_quad`'s work-item (world, 0) — single writer, no atomics — and
+  `solve_done` folded into `solve_search_update`. With graph replay
+  active these are wall-neutral (paired A/B ±4.5 ms) but further cut the
+  per-iteration kernel count and help the graph-less fallback.
 
 ### Fixed
 - `lite_forward` was clobbered by a blanket `drained(orig_forward)`
@@ -90,16 +118,24 @@ All notable changes to mjlab-sycl.
 - Dev-harness files removed from the index (`.temp/` scripts,
   `probe_field_hunt`, leaked scratch) and `.gitignore` completed — a
   clone contains only shippable files.
+- `test_e2e`'s 2-D atomic reduction was a tolerance lottery: random-order
+  float32 atomics carry ~3e-5 relative rounding which sat under the
+  rtol=1e-5 check, so it failed depending on the GPU's atomic schedule.
+  Now uses integer-valued float32 (exact in any order) with an exact
+  comparison — deterministic and a stronger check.
+- The overlay self-check no longer trips on `__pycache__` bytecode
+  artifacts of the bundled backend sources (each tree compiles its own
+  `.pyc`; comparing them byte-wise false-failed).
 
 ### Performance
 - −35% kernel launches/step, −17% env.step from the poll/forward fixes,
-  7 instead of 8 queue drains/step after the sense merge, and −29%
-  serialized kernel time from flat-kernel v2 (435 → 308 ms/step measured
-  serialized). Current census: ~938 launches and 7 drains per env.step,
-  median ≈ 270–280 ms/step at 4096 envs (Arc 130T). End-to-end bench:
-  11,835–11,940 env-steps/s vs 5,485 archived. Every change above is
-  A/B-verified against the cpu device (max |sycl − cpu| ≈ 3e-06) and
-  gated by `mjlab-sycl-test`.
+  7 instead of 8 queue drains/step after the sense merge, −29% serialized
+  kernel time from flat-kernel v2, and −12.7% from graph batch replay.
+  Current census: ~938 launches, 7 drains per env.step, and 4 graph
+  submissions replacing ~1,056 per-kernel submits; median ≈ 210 ms/step
+  at 4096 envs (Arc 130T). End-to-end bench: 13,390 env-steps/s vs 5,485
+  archived. Every change above is A/B-verified against the cpu device
+  (max |sycl − cpu| ≈ 3e-06) and gated by `mjlab-sycl-test`.
 
 ## [0.2.0] - 2026-09-08 — first public release candidate
 

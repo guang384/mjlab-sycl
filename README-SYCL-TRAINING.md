@@ -195,14 +195,17 @@ is the only reliable detector.
 | `MJLAB_SYCL_FLAT_JTDAJ` | `1` | kill switch for every flat kernel rewrite (JTDAJ, contact jac, 4 cholesky) |
 | `MJLAB_SYCL_FUSED_SET_CONST` | off | CPU-sim only: fuse the set-const model loops; auto-on when `MJLAB_SYCL_SIM_DEVICE=cpu` |
 | `MJLAB_SYCL_FUSED_SOLVER_TAIL` | off | CPU-sim only: fuse the solver tail; auto-on when `MJLAB_SYCL_SIM_DEVICE=cpu` |
+| `MJLAB_SYCL_GRAPH` | `1` | capture the solver iteration batch as one SYCL command graph and replay it as a single submission |
+| `MJLAB_SYCL_SOLVER_CTX` | `1` | reuse the per-solve solver scratch (stable launch-cache keys, required for graph replay) |
+| `MJLAB_SYCL_LLT_SKIP` | `1` | skip the cholesky factorization when no constraint state changed since the last one |
 | `MJLAB_SYCL_SC_CPU` | unset | keep SensorContext render buffers on cpu instead of sycl |
 | `MJLAB_PPO_DEVICE` | `xpu` if available, else `cpu` | torch device for the PPO runner in `bench` |
 | `MJLAB_TORCH_THREADS` | `2` | torch intra-op threads cap. Env managers run hundreds of tiny torch ops per step; all-core default wastes ~3 CPU cores for no speed (measured 4096 envs: 14->4.6 cores, 2->1.9 cores, same wall). Override if you want more. |
 
 ## Performance (Arc 130T, microduck velocity, 4096 envs)
 
-- ~11,000–12,000 env-steps/s end-to-end vs ~258 on the CPU device; the
-  0.2.0 archive measured 5,485 — every gain since is itemized in
+- ~13,400 env-steps/s end-to-end vs ~258 on the CPU device; the 0.2.0
+  archive measured 5,485 — every gain since is itemized in
   docs/performance.md.
 - Numerics: `max |sycl − cpu|` over 100-step rollouts on the same
   model/actions ≈ 2–3e-06.

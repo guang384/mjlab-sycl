@@ -51,10 +51,16 @@ def _shipped_files(backend: str):
   warp_dir, cache_dir = _warp_layout()
   for src_sub, dst_sub in _OVERLAY_PAIRS:
     src_dir = os.path.join(backend, src_sub)
-    for root, _dirs, files in os.walk(src_dir):
+    for root, dirs, files in os.walk(src_dir):
+      # bytecode caches are build artifacts of whoever imported the backend
+      # source last; each tree compiles its own .pyc, so comparing them
+      # byte-wise false-fails. They are never part of the shipped overlay.
+      dirs[:] = [d for d in dirs if d != "__pycache__"]
       rel = os.path.relpath(root, src_dir)
       dst_dir = os.path.join(warp_dir, dst_sub, rel)
       for f in files:
+        if f.endswith((".pyc", ".pyo")):
+          continue
         yield os.path.join(root, f), os.path.join(dst_dir, f)
   yield os.path.join(backend, "warpsycl.dll"), os.path.join(cache_dir, "warpsycl.dll")
 
@@ -153,11 +159,14 @@ def main() -> int:
   n = 0
   for src_sub, dst_sub in _OVERLAY_PAIRS:
     src_dir = os.path.join(backend, src_sub)
-    for root, _dirs, files in os.walk(src_dir):
+    for root, dirs, files in os.walk(src_dir):
+      dirs[:] = [d for d in dirs if d != "__pycache__"]
       rel = os.path.relpath(root, src_dir)
       dst_dir = os.path.join(warp_dir, dst_sub, rel)
       os.makedirs(dst_dir, exist_ok=True)
       for f in files:
+        if f.endswith((".pyc", ".pyo")):
+          continue
         shutil.copy2(os.path.join(root, f), os.path.join(dst_dir, f))
         n += 1
   print(f"[mjlab-sycl] overlaid {n} backend files onto {warp_dir}")

@@ -161,12 +161,18 @@ def main():
     check(failures, f"float atomic_add under {n}-way race", fvals.numpy()[0] == float(n))
 
     # -- 8. 2-D launch + atomic reduction --------------------------------------
+    # Integer-valued float32 makes the atomic reduction order-independent:
+    # partial sums stay below 2^24 so ANY float32 accumulation order is
+    # exact. Random floats made this check a lottery -- random-order
+    # float32 atomics carry ~sqrt(n)*eps relative rounding (~3e-5 here),
+    # which sat UNDER the old rtol=1e-5, so it failed or passed depending
+    # on the GPU's atomic schedule.
     d0, d1 = 512, 512
-    a2d_np = np.random.rand(d0, d1).astype(np.float32)
+    a2d_np = np.random.randint(0, 16, (d0, d1)).astype(np.float32)
     a2d = wp.array(a2d_np, dtype=wp.float32, device="sycl")
     s = wp.zeros(1, dtype=wp.float32, device="sycl")
     wp.launch(reduce2d_kernel, dim=(d0, d1), inputs=[a2d, s], device="sycl")
-    check(failures, "2-D launch atomic reduction", np.isclose(s.numpy()[0], a2d_np.sum(), rtol=1e-5))
+    check(failures, "2-D launch atomic reduction", s.numpy()[0] == a2d_np.sum())
 
     # -- 9. adjoint path (wp.Tape) ----------------------------------------------
     xg = wp.array(np.random.rand(1024).astype(np.float32), dtype=wp.float32, device="sycl", requires_grad=True)
