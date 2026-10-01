@@ -96,6 +96,11 @@ All notable changes to mjlab-sycl.
 - Comments reconciled with code across runtime_patch, loop_poll,
   flat_kernels, fused_tree, fused_linesearch, bench, README (drain sites,
   tile padding, install ordering, gate count, drain/launch arithmetic).
+- Lite forward replays as one command graph (`graph_batch.run_sequence`,
+  same `MJLAB_SYCL_GRAPH` switch): the fwd_position/sensor/fwd_velocity
+  sequence is static, so after two plain runs it replays as a single queue
+  submission. Wall-neutral on its own (the batch replay already owns the
+  big win) but removes ~15 more per-kernel submits from every step.
 - Two more iteration-kernel merges (`MJLAB_SYCL_FUSED_LINESEARCH` /
   `MJLAB_SYCL_FUSED_SOLVER`): `linesearch_prepare_gauss` folded into
   `prepare_quad`'s work-item (world, 0) — single writer, no atomics — and

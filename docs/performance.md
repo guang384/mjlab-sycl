@@ -104,6 +104,8 @@ default — kept for attribution):
 | iteration-kernel merges (prepare_gauss→prepare_quad, solve_done→search_update) | wall-neutral with graphs on (±4.5 ms), fewer kernels/launches | kept (same fusion switches) |
 | selective set_const recompute on resets (fall → randomize event) | recompute_constants 50 → 10 ms/step with active policies; +17 % end-to-end | kept, default-on (`MJLAB_SYCL_FUSED_SET_CONST`) |
 | torch thread sweep re-run under the new pipeline (2/4/8) | paired A/B: no significant wall difference | default 2 unchanged |
+| selective kinematics/com_pos/crb for set_const recompute (copied prep kernels with world-id indirection) | unit A/B equivalent to 2e-4, but only ~0.8 ms/call at 4096 envs (4 reset ids): the cut stages are launch-bound at small nproc and factor_m stays all-world | reverted -- 400 lines of copied kernels not justified below the noise floor |
+| lite forward as one command graph (`graph_batch.run_sequence`) | ~15 submits/step -> 1; wall-neutral | kept (`MJLAB_SYCL_GRAPH`) |
 | sense() drain merge (sensor context already drains in finalize) | 8 -> 7 drains/step, no measurable wall change | kept |
 | kernel args by-value capture (codegen) | ~1 % (noise); DPC++ also requires const kernel lambdas | dead end, reverted |
 | 8192 envs | +2.7 % | not worth wall 2x |

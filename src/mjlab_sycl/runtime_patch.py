@@ -35,6 +35,7 @@ from mjlab_sycl import loop_poll as _sycl_loop
 from mjlab_sycl import skip_empty as _sycl_skip_empty
 from mjlab_sycl import solver_ctx as _sycl_solver_ctx
 from mjlab_sycl import act_fuse as _sycl_act_fuse
+from mjlab_sycl import graph_batch as _gb
 
 
 _PATCHED = False
@@ -166,11 +167,18 @@ def patch_simulation_for_sycl() -> None:
         else:
           m = self._wp_model
           d = self._wp_data
-          _mj_fwd.fwd_position(m, d, factorize=False)
-          d.sensordata.zero_()
-          _mj_sensor.sensor_pos(m, d)
-          _mj_fwd.fwd_velocity(m, d)
-          _mj_sensor.sensor_vel(m, d)
+
+          def _seq():
+            _mj_fwd.fwd_position(m, d, factorize=False)
+            d.sensordata.zero_()
+            _mj_sensor.sensor_pos(m, d)
+            _mj_fwd.fwd_velocity(m, d)
+            _mj_sensor.sensor_vel(m, d)
+
+          # static kernel sequence: after two plain runs it replays as ONE
+          # graph submission (see graph_batch.run_sequence)
+          if not _gb.run_sequence("lite_forward", _seq, m):
+            _seq()
         # drain so host reads in reward/obs see completed kernels
         wp.synchronize_device("sycl")
 

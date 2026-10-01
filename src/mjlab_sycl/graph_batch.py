@@ -49,6 +49,7 @@ def stats() -> dict:
 
 # (id(m), id(d)) -> entry; entries hold strong refs so ids stay valid.
 _CACHE: dict = {}
+_SEQ: dict = {}  # tag -> entry, for fixed sequences like the lite forward
 
 _PLAIN = -2  # entry marker: graphs disabled for this (m, d)
 
@@ -102,8 +103,8 @@ def _tape_active() -> bool:
     return wctx.runtime is not None and wctx.runtime.tape is not None
 
 
-def _counted_batch(while_body, n, kwargs) -> int:
-    """Run the batch plain, return the number of top-level wp.launch calls."""
+def _counted_call(fn) -> int:
+    """Run fn() plain, return the number of top-level wp.launch calls."""
     counter = [0]
     inner = wp.launch
 
@@ -113,24 +114,31 @@ def _counted_batch(while_body, n, kwargs) -> int:
 
     wp.launch = counting
     try:
-        for _ in range(n):
-            while_body(**kwargs)
+        fn()
     finally:
         wp.launch = inner
     return counter[0]
 
 
-def _record(api, while_body, n, kwargs):
-    """Record the batch as a graph and run it (post-finalize submit).
+def _counted_batch(while_body, n, kwargs) -> int:
+    def run_all():
+        for _ in range(n):
+            while_body(**kwargs)
 
-    Returns (handle, launch_count) on success.  handle is None means the
-    batch has NOT executed and the caller must fall back to a plain run.
+    return _counted_call(run_all)
+
+
+def _record_call(api, fn):
+    """Record fn() as a graph and run it (post-finalize submit).
+
+    Returns (handle, launch_count) on success.  handle is None means fn has
+    NOT executed and the caller must fall back to a plain run.
     """
     h = api.wp_sycl_graph_begin()
     if not h:
         return None, -1
     try:
-        count = _counted_batch(while_body, n, kwargs)
+        count = _counted_call(fn)
     except Exception:
         try:
             if api.wp_sycl_graph_end(h) == 0:
@@ -146,6 +154,70 @@ def _record(api, while_body, n, kwargs):
         api.wp_sycl_graph_free(h)
         return None, -1
     return h, count
+
+
+def _record(api, while_body, n, kwargs):
+    def run_all():
+        for _ in range(n):
+            while_body(**kwargs)
+
+    return _record_call(api, run_all)
+
+
+def run_sequence(tag: str, fn, ident=None) -> bool:
+    """Capture a static kernel sequence (e.g. lite forward) as one graph.
+
+    Same three-state arming as run_batch: run once plain to count launches,
+    record+verify once, then replay as a single submission.  The sequence
+    must be static (same launches every call) and its array arguments must
+    stay identical objects -- per-call scratch allocated *inside* fn is
+    fine, the graph pins the recorded buffers and reuses them.  ``ident``
+    (typically the model) keys liveness: a different object re-records.
+    Returns True when the sequence already ran; False when the caller
+    should just call fn() itself.
+    """
+    global _broken
+    if _broken or not _enabled() or _tape_active():
+        return False
+    api = _api()
+    if api is None:
+        return False
+
+    e = _SEQ.get(tag)
+    if e is None or e.m is not ident:
+        e = _Entry(ident, None)
+        if len(_SEQ) < 16:
+            _SEQ[tag] = e
+
+    if e.launches == _PLAIN:
+        return False
+
+    if e.graph is not None:
+        if api.wp_sycl_graph_submit(e.graph) == 0:
+            _STATS["replayed"] += 1
+            return True
+        api.wp_sycl_graph_free(e.graph)
+        e.graph = None
+        _STATS["fallback"] += 1
+
+    if e.launches < 0:
+        e.launches = _counted_call(fn)
+        _STATS["plain"] += 1
+        return True
+
+    h, count = _record_call(api, fn)
+    if h is None:
+        e.launches = _PLAIN
+        _STATS["fallback"] += 1
+        return False
+    if count != e.launches:
+        api.wp_sycl_graph_free(h)
+        e.launches = _PLAIN
+        _STATS["fallback"] += 1
+        return True
+    e.graph = h
+    _STATS["recorded"] += 1
+    return True
 
 
 def run_batch(while_body, n, kwargs) -> bool:
