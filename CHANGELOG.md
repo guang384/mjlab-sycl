@@ -26,6 +26,13 @@ All notable changes to mjlab-sycl.
 - `_bootstrap` preloads oneAPI SYCL DLLs before torch-xpu can pin the pip
   copies, so every entry point sees one consistent SYCL runtime.
 - CI installs numpy in the CPU-side job (warp needs it at import).
+- Explicit-Gaussian rollout inference (`act_fuse.py`, `MJLAB_SYCL_ACT_FUSE`):
+  `GaussianDistribution.sample/log_prob` go through `torch.distributions.Normal`,
+  whose Python machinery measured 5.5 ms + 3.8 ms per act call at 4096 envs
+  (the underlying tensor math is ~0.1 ms). Closed-form tensor expressions
+  cut the act path 19.3 → 12.2 ms/call (−7 ms/step); both sides of the PPO
+  ratio use the same patched `log_prob`, so the surrogate stays internally
+  consistent. Distributionally identical sampling.
 - Command-graph batch replay (`graph_batch.py`, `MJLAB_SYCL_GRAPH`): the
   solver's 8-iteration batch (~264 kernel submissions) is captured as a
   SYCL command graph — new warpsycl.dll API (`wp_sycl_graph_begin/end/
@@ -105,6 +112,13 @@ All notable changes to mjlab-sycl.
   both ways) — the old "CPU only" verdict measured just that case.
 
 ### Fixed
+- SYCL runtime loading hardened (`_bootstrap` / `build._load_sycl_dll`):
+  sycl8.dll's own imports (libmmd from oneAPI's top-level `<ver>/bin`, not
+  the compiler bin) are now preloaded in dependency order before warpsycl
+  loads, and the runtime DLL loader walks that chain itself — on some
+  loader states the dependency search alone missed them (WinError 127).
+  Also: `act_fuse` imports torch lazily — importing torch before warpsycl
+  pins pip's sycl8.dll by name and warpsycl then fails to load.
 - `lite_forward` was clobbered by a blanket `drained(orig_forward)`
   assignment — the solver-skipping final forward never ran, costing ~50
   ms/step at 4096 envs (5 solver calls per step instead of 4).

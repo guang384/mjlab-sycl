@@ -198,6 +198,7 @@ is the only reliable detector.
 | `MJLAB_SYCL_GRAPH` | `1` | capture the solver iteration batch as one SYCL command graph and replay it as a single submission |
 | `MJLAB_SYCL_SOLVER_CTX` | `1` | reuse the per-solve solver scratch (stable launch-cache keys, required for graph replay) |
 | `MJLAB_SYCL_LLT_SKIP` | `1` | skip the cholesky factorization when no constraint state changed since the last one |
+| `MJLAB_SYCL_ACT_FUSE` | `1` | closed-form Gaussian sample/log_prob in the rollout act path (~7 ms/step faster) |
 | `MJLAB_SYCL_SC_CPU` | unset | keep SensorContext render buffers on cpu instead of sycl |
 | `MJLAB_PPO_DEVICE` | `xpu` if available, else `cpu` | torch device for the PPO runner in `bench` |
 | `MJLAB_TORCH_THREADS` | `2` | torch intra-op threads cap. Env managers run hundreds of tiny torch ops per step; all-core default wastes ~3 CPU cores for no speed (measured 4096 envs: 14->4.6 cores, 2->1.9 cores, same wall). Override if you want more. |

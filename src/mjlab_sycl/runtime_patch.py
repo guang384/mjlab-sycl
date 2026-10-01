@@ -34,6 +34,7 @@ from mjlab_sycl import launch_cache as _sycl_launch_cache
 from mjlab_sycl import loop_poll as _sycl_loop
 from mjlab_sycl import skip_empty as _sycl_skip_empty
 from mjlab_sycl import solver_ctx as _sycl_solver_ctx
+from mjlab_sycl import act_fuse as _sycl_act_fuse
 
 
 _PATCHED = False
@@ -299,6 +300,10 @@ def patch_simulation_for_sycl() -> None:
   # launch-cache key across solves; without this ~28% of launches rebuild
   # their packed args every step (~65 ms/step of host submit at 4096 envs).
   _sycl_solver_ctx.install()
+
+  # Rollout inference: closed-form Gaussian sample/log_prob instead of the
+  # torch.distributions machinery (~9 ms/act call at 4096 envs -> ~1 ms).
+  _sycl_act_fuse.install()
 
   # Fused linesearch (after launch_cache/fused_solver so the cache still
   # sees the fused kernels), then skip 0-dim launches (flex/tendon/equality/
