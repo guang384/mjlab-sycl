@@ -288,6 +288,15 @@ def _sycl_dll_dirs():
     bin_dir = os.path.join(oneapi_root, "compiler", "latest", "bin")
     if os.path.isdir(bin_dir):
         dirs.append(bin_dir)  # sycl8.dll, ur_loader.dll, ...
+    # oneAPI's top-level <root>/<ver>/bin carries libmmd.dll, a hard import
+    # of sycl8.dll (it is NOT in the compiler bin dir)
+    try:
+        for entry in os.scandir(oneapi_root):
+            cand = os.path.join(entry.path, "bin")
+            if entry.is_dir() and os.path.isdir(cand):
+                dirs.append(cand)
+    except OSError:
+        pass
     return dirs
 
 
@@ -312,6 +321,22 @@ def _load_sycl_dll(dll_path):
             _sycl_dll_dir_handles.append(os.add_dll_directory(d))
         except OSError:
             pass
+
+    # sycl8.dll's own imports must be in memory before warpsycl's loader
+    # pass: on some loader states (after other runtimes have initialized)
+    # the dependency search alone misses them and the load dies with
+    # WinError 127.  Explicitly walking the chain in dependency order is
+    # what works reliably -- each load is idempotent and a missing optional
+    # member is skipped.
+    for dep in ("libmmd.dll", "ur_win_proxy_loader.dll", "sycl8.dll"):
+        for d in dirs:
+            p = os.path.join(d, dep)
+            if os.path.isfile(p):
+                try:
+                    ctypes.CDLL(p)
+                except OSError:
+                    pass
+                break
 
     return ctypes.CDLL(_sycl_strip_extended_path(dll_path))
 
