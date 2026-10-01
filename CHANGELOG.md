@@ -44,6 +44,14 @@ All notable changes to mjlab-sycl.
   −35.0 ± 3.9 ms/step (−12.7%).
 
 ### Changed
+- README gains a **"Relationship to NVIDIA/warp"** section (not a fork — a
+  strictly additive overlay on `warp-lang==1.12.0`; `warp.dll` and the
+  CUDA/CPU paths untouched; Apache-2.0 §4(b) notices ship with the files),
+  and `warp_backend/README.md` records the provenance endgame: the local
+  NVIDIA/warp `sycl` development clone is retired (its `history.bundle` was
+  verified against the clone before deletion). The bundle is now the archive
+  of record and restores on top of the `v1.12.0` tag; backend work continues
+  in `src/mjlab_sycl/backend/`.
 - **Batched convergence polling is now default-on** (`MJLAB_SYCL_POLL_EVERY=8`,
   superseding the 0.2.0 "default-off" note): each solve polls convergence
   once after the first full batch instead of every iteration — with the

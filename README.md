@@ -92,14 +92,41 @@ docs/performance.md   measured performance baseline archive
 warp_backend/         provenance + rebuild docs for the vendored backend
 ```
 
+## Relationship to NVIDIA/warp
+
+`mjlab-sycl` is **not a fork of NVIDIA/warp** and never replaces it. Training
+runs against the ordinary `warp-lang==1.12.0` package, with a strictly
+additive **overlay** applied on top of it by `python -m mjlab_sycl install`:
+
+- 7 modified files (5 Python modules under `warp/_src/`, 2 headers under
+  `warp/native/`) + 2 new files (`sycl_runtime.{h,cpp}`) + a prebuilt
+  `warpsycl.dll` micro-driver. File-by-file inventory:
+  [`warp_backend/README.md`](warp_backend/README.md).
+- `warp.dll` is never rebuilt and the CUDA/CPU code paths are untouched — on a
+  machine without an Intel GPU the overlay is inert.
+- Version-locked to 1.12.0. Every entry point verifies the overlay is
+  byte-identical to `src/mjlab_sycl/backend/` before physics starts, because
+  `uv sync` / `pip install` silently reinstall warp and wipe it.
+
+Licensing: [NVIDIA/warp](https://github.com/NVIDIA/warp) is Apache-2.0; the
+derived files carry MODIFIED notices (§4(b)) and the licenses ship in
+`src/mjlab_sycl/backend/`.
+
+Provenance: the SYCL backend was developed on a `sycl` branch in a local
+NVIDIA/warp clone checked out at the `v1.12.0` tag. That clone has been
+deleted; its complete history (15 commits, including the recorded dead-end
+`wip-tile-cooperative` experiments) is archived in
+[`warp_backend/history.bundle`](warp_backend/history.bundle) and restores on
+top of the `v1.12.0` tag (recipe in `warp_backend/README.md`). Since that
+2026-09-06 snapshot the backend evolves **inside this repo**:
+`src/mjlab_sycl/backend/` is the single live copy, and later changes are
+ordinary commits in this project's history.
+
 ## Limitations
 
 - Windows + Intel GPU only (battle-tested on an Arc 130T iGPU); no Linux.
 - This is a *training path*, not full warp parity (no official warp test suite).
 - Version-locked to warp 1.12.0 / mjlab 1.3.0 / mujoco-warp 3.8.1.
-- The vendored backend derives from [NVIDIA/warp 1.12.0](https://github.com/NVIDIA/warp)
-  (Apache-2.0; modified files carry MODIFIED notices; licenses ship in
-  `src/mjlab_sycl/backend/`).
 
 ## Feedback
 

@@ -1,8 +1,10 @@
 # Vendored warp SYCL backend — provenance & rebuild docs
 
-The warp 1.12.0 SYCL backend this package ships was developed in a local
-clone of NVIDIA/warp; the full commit history is preserved in
-`history.bundle` in this directory (see "Development history" below).
+The warp 1.12.0 SYCL backend this package ships was developed on a `sycl`
+branch in a local clone of NVIDIA/warp, checked out at the `v1.12.0` tag.
+That clone has been deleted (2026-10-01); the full commit history is
+preserved in `history.bundle` in this directory and is now the archive of
+record (see "Development history" below).
 The files themselves live in `src/mjlab_sycl/backend/`, the single copy:
 it is what goes into the wheel and what `python -m mjlab_sycl install`
 overlays onto the environment's warp package. This directory holds the
@@ -37,8 +39,11 @@ sources together.
 
 ## Development history (history.bundle)
 
-A thin git bundle carrying the backend's complete development history on top
-of the official NVIDIA/warp v1.12.0 release — 15 commits across two branches:
+A thin git bundle carrying the backend's development history on top
+of the official NVIDIA/warp v1.12.0 release — 15 commits across two branches,
+complete up to the 2026-09-06 snapshot from the now-deleted clone. Backend
+changes made after that snapshot live only in this repo's commit history
+(touching `src/mjlab_sycl/backend/`).
 
 - `sycl` — the delivered arc: toolchain spike, micro-driver, SYCL codegen,
   device integration, tile SLM, the performance passes (async submission,
