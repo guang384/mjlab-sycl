@@ -193,7 +193,7 @@ is the only reliable detector.
 | `MJLAB_SYCL_FUSED_LINESEARCH` | `1` | fuse the linesearch teardown and mv+jv launches |
 | `MJLAB_SYCL_FUSED_TREE` | `1` | one launch per kinematic chain instead of one per depth level |
 | `MJLAB_SYCL_FLAT_JTDAJ` | `1` | kill switch for every flat kernel rewrite (JTDAJ, contact jac, 4 cholesky) |
-| `MJLAB_SYCL_FUSED_SET_CONST` | off | CPU-sim only: fuse the set-const model loops; auto-on when `MJLAB_SYCL_SIM_DEVICE=cpu` |
+| `MJLAB_SYCL_FUSED_SET_CONST` | `1` | selective per-world model-constant recompute on resets (fall → randomize): 50 → 10 ms/step at 4096 envs |
 | `MJLAB_SYCL_FUSED_SOLVER_TAIL` | off | CPU-sim only: fuse the solver tail; auto-on when `MJLAB_SYCL_SIM_DEVICE=cpu` |
 | `MJLAB_SYCL_GRAPH` | `1` | capture the solver iteration batch as one SYCL command graph and replay it as a single submission |
 | `MJLAB_SYCL_SOLVER_CTX` | `1` | reuse the per-solve solver scratch (stable launch-cache keys, required for graph replay) |
@@ -204,7 +204,7 @@ is the only reliable detector.
 
 ## Performance (Arc 130T, microduck velocity, 4096 envs)
 
-- ~13,400 env-steps/s end-to-end vs ~258 on the CPU device; the 0.2.0
+- ~15,800 env-steps/s end-to-end vs ~258 on the CPU device; the 0.2.0
   archive measured 5,485 — every gain since is itemized in
   docs/performance.md.
 - Numerics: `max |sycl − cpu|` over 100-step rollouts on the same

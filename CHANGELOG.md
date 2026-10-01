@@ -95,6 +95,14 @@ All notable changes to mjlab-sycl.
   `solve_done` folded into `solve_search_update`. With graph replay
   active these are wall-neutral (paired A/B ±4.5 ms) but further cut the
   per-iteration kernel count and help the graph-less fallback.
+- **Selective model-constant recompute is now default-on for the GPU too**
+  (`MJLAB_SYCL_FUSED_SET_CONST`, was CPU-sim only): the reset path (fall →
+  domain-randomization event → `recompute_constants`) used to recompute
+  model constants for ALL 4096 worlds when a handful reset. The selective
+  kernel limits the work to the reset env_ids — measured 50 → 10 ms/step
+  at 4096 envs with active policies, **+17% end-to-end (13,458 → 15,762
+  env-steps/s)**. Even the all-worlds case is a wash on the GPU (66 ms
+  both ways) — the old "CPU only" verdict measured just that case.
 
 ### Fixed
 - `lite_forward` was clobbered by a blanket `drained(orig_forward)`

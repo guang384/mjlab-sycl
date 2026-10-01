@@ -308,15 +308,18 @@ def patch_simulation_for_sycl() -> None:
   _sycl_fused_ls.install()
   _sycl_skip_empty.install()
 
-  # Fused set_const_0 + solver_tail: only beneficial on CPU (SYCL GPU
-  # prefers the original parallel kernels — the fused versions serialize
-  # per-world work and lose parallelism).  Enable explicitly on CPU with
-  #   MJLAB_SYCL_FUSED_SET_CONST=1 / MJLAB_SYCL_FUSED_SOLVER_TAIL=1
-  # (auto-enabled when the sim device is CPU, not sycl).
+  # Fused set_const_0: selective per-world recompute of model constants
+  # after domain randomization. The reset path (fall -> event ->
+  # recompute_constants) recomputes ALL worlds for a handful of reset ones;
+  # the selective kernel cuts that 50 -> 10 ms/step at 4096 envs with
+  # random actions, and even the all-worlds case is a wash (66 ms both --
+  # the old "CPU only" verdict measured just that case).  Default-on for
+  # every sim device; MJLAB_SYCL_FUSED_SET_CONST=0 falls back.
+  from mjlab_sycl import fused_set_const
+  fused_set_const.install()
+  # fused_solver_tail stays CPU-only: it serializes the per-world CG tail
+  # and the GPU prefers the original parallel kernels (CG is rare here).
   _is_cpu_sim = os.environ.get("MJLAB_SYCL_SIM_DEVICE", "sycl").strip().lower() == "cpu"
-  if _is_cpu_sim or os.environ.get("MJLAB_SYCL_FUSED_SET_CONST", "").strip().lower() in ("1", "true", "on"):
-    from mjlab_sycl import fused_set_const
-    fused_set_const.install()
   if _is_cpu_sim or os.environ.get("MJLAB_SYCL_FUSED_SOLVER_TAIL", "").strip().lower() in ("1", "true", "on"):
     from mjlab_sycl import fused_solver_tail
     fused_solver_tail.install()

@@ -26,7 +26,8 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 
 | config (4096 envs unless noted) | per-iteration wall | env-steps/s |
 |---|---|---|
-| sycl, PPO on **xpu** (default), graph-batch refresh (2026-09-30) | mean 8.3 s (rollout 7.3 / ppo 1.0) | **13,390** |
+| sycl, PPO on **xpu** (default), selective-recompute refresh (2026-09-30) | mean 7.1 s (rollout 6.2 / ppo 0.9) | **15,762** |
+| sycl, PPO on **xpu** (default), graph-batch refresh (2026-09-30) | mean 8.3 s (rollout 7.3 / ppo 1.0) | 13,390 |
 | sycl, PPO on **xpu** (default), flat-kernel v2 refresh (2026-09-30, 2 runs) | mean 9.1 – 9.4 s | 11,835 – 11,940 |
 | sycl, PPO on **xpu** (default), post-fusion (2026-09-30, 3 runs) | mean 10.2 – 17.1 s (run-to-run clock variance) | 6,301 – 10,782 |
 | sycl, PPO on **cpu** | 23.7 s (rollout 19.1 / ppo 4.5) | 5,140 |
@@ -70,6 +71,14 @@ cache hits bypass launch hooks, so hook-based counts under-sample ~3x):
   enqueue floor measured on an idle queue is 20-45 us (raw pack ~45 us),
   while in-workload "submit" times reach 300+ us.
 
+Rollout-phase budget (active policy / random actions, 2026-09-30):
+
+- env.step ~260 ms: sim.step ~170 (the GPU physics), lite forward ~13,
+  selective recompute on falls ~10 (was 50 before selectivity), reward ~8,
+  policy act path ~17 (XPU launch-overhead bound, shares the iGPU with
+  physics), obs/sense/termination/scene ~15, wrapper+manager misc ~8.
+- torch thread count is NOT a lever here (paired A/B 2/4/8: ns).
+
 Historical (2026-09-08 baseline, before the fusion suite and poll
 default — kept for attribution):
 
@@ -93,6 +102,8 @@ default — kept for attribution):
 | solver scratch reuse (SolverContext/step_size_cost/nsolving across solves) | launch-cache hit rate 60 -> 81 %, slow rebuild path halved; +2-3 % throughput | kept (`MJLAB_SYCL_SOLVER_CTX`) |
 | command-graph batch replay (solver 8-iteration batch as one submission) | paired A/B −35.0 ± 3.9 ms/step (−12.7 %) | kept (`MJLAB_SYCL_GRAPH`) |
 | iteration-kernel merges (prepare_gauss→prepare_quad, solve_done→search_update) | wall-neutral with graphs on (±4.5 ms), fewer kernels/launches | kept (same fusion switches) |
+| selective set_const recompute on resets (fall → randomize event) | recompute_constants 50 → 10 ms/step with active policies; +17 % end-to-end | kept, default-on (`MJLAB_SYCL_FUSED_SET_CONST`) |
+| torch thread sweep re-run under the new pipeline (2/4/8) | paired A/B: no significant wall difference | default 2 unchanged |
 | sense() drain merge (sensor context already drains in finalize) | 8 -> 7 drains/step, no measurable wall change | kept |
 | kernel args by-value capture (codegen) | ~1 % (noise); DPC++ also requires const kernel lambdas | dead end, reverted |
 | 8192 envs | +2.7 % | not worth wall 2x |

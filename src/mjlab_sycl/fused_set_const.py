@@ -7,11 +7,14 @@ tendon_invweight0, actuator_acc0) issue ~372 kernel launches for microduck
 kernel — one work-item per world, all Cholesky forward+back substitutions
 inlined.
 
-Installed by patch_simulation_for_sycl() when the sim device is CPU
-(MJLAB_SYCL_SIM_DEVICE=cpu) or when MJLAB_SYCL_FUSED_SET_CONST is truthy;
-set MJLAB_SYCL_FUSED_SET_CONST=0 to fall back to the original loops. On the
-SYCL GPU the original parallel kernels win — this fused form serializes
-per-world work — which is why it is not the default there.
+Installed by default on every sim device (kill switch
+MJLAB_SYCL_FUSED_SET_CONST=0).  The big win is SELECTIVITY: the reset
+path (fall -> domain-randomization event -> recompute_constants) used to
+recompute model constants for ALL worlds when a handful reset, and this
+module's captured env_ids limit the work to just those worlds — measured
+50 -> 10 ms/step at 4096 envs with random actions.  Even the all-worlds
+case is a wash on the GPU (66 ms both ways), which is what the old
+"CPU only" note was based on.
 """
 
 from __future__ import annotations
