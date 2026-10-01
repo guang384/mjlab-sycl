@@ -60,10 +60,11 @@ verification gates, environment variables and the hard-won footguns.
 ## Measured performance
 
 Intel Arc 130T (Lunar Lake iGPU), microduck velocity task, 4096 envs:
-**~5.5k env-steps/s (~19 s/iteration)** — about **14x the same stack on its
-warp-cpu device**. Full measured archive (per-step budget, kernel ranking,
-every optimization attempt and its verdict, hardware comparisons):
-[`docs/performance.md`](docs/performance.md).
+**~15.8k env-steps/s (~7.1 s/iteration)** end-to-end, vs ~258 on the same
+stack's warp-cpu device (0.2.0 archive: 5,485; the 2026-10-01 cold-start
+re-check landed ~20% lower — treat GPU session state as the error bar). Full
+measured archive (per-step budget, kernel ranking, every optimization attempt
+and its verdict, hardware comparisons): [`docs/performance.md`](docs/performance.md).
 
 ## Viewer tooling
 

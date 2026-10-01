@@ -76,12 +76,6 @@ WP_SYCL_API void wp_sycl_synchronize();
 // hang names its culprit instead of wedging the machine silently.
 WP_SYCL_API void wp_sycl_note_kernel(const char* name);
 WP_SYCL_API const char* wp_sycl_device_name();
-// SLM high-water tracking: tile.h alloc() reports bytes used per task;
-// the device side atomically maxes it into USM so the host can size the
-// arena to the real workload instead of guessing WP_MAX_SYCL_SHARED.
-WP_SYCL_API void wp_sycl_note_slm_usage(unsigned int bytes);
-WP_SYCL_API unsigned int wp_sycl_get_slm_highwater();
-WP_SYCL_API void wp_sycl_reset_slm_highwater();
 }
 
 inline sycl::queue& wp_sycl_queue() {

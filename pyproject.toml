@@ -19,8 +19,17 @@ dependencies = [
     "torch==2.9.1",
 ]
 
+# pytest is only needed to run the host-only overlay gate (the GPU gates run
+# via `mjlab-sycl-test`, not pytest); testpaths keeps a bare `pytest` from
+# collecting the in-package GPU test modules on machines without the stack.
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
 [project.scripts]
 mjlab-sycl-train = "mjlab_sycl.train:main"
 mjlab-sycl-bench = "mjlab_sycl.bench:main"
 mjlab-sycl-test = "mjlab_sycl.test:main"
 mjlab-sycl-check = "mjlab_sycl.doctor:main"
+
+[tool.pytest.ini_options]
+testpaths = ["src/mjlab_sycl/test_overlay.py"]

@@ -8,6 +8,9 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- pytest configuration: `[tool.pytest.ini_options]` `testpaths` points at
+  the host-only overlay gate (a bare `pytest` no longer collects the
+  in-package GPU test modules), and pytest is declared as a `test` extra.
 - Root `LICENSE` (Apache-2.0 full text) and a landing-page `README.md`
   (what/why, quickstart, measured performance, tooling, links).
 - Launch-overhead suite for the physics hot path (Arc 130T, 4096-env
@@ -125,6 +128,16 @@ All notable changes to mjlab-sycl.
   both ways) — the old "CPU only" verdict measured just that case.
 
 ### Fixed
+- `_bootstrap.py` had been pasted into itself once (~200 duplicated lines;
+  the orphan `2.0` at the seam is the paste artifact). The LIVE copy —
+  including the eager `warpsycl.dll` preload fix, which had landed only in
+  the second, shadowing definition — is kept; the dead first copy is gone
+  (−185 lines).
+- README's performance headline was ~3x stale (0.2.0's ~5.5k env-steps/s;
+  the stack measures ~15.8k — see `docs/performance.md` for the error bar).
+- `sycl_runtime.h` declared three SLM high-water exports that were never
+  defined or called (the real mechanism is tile.h's compile-time
+  `WP_MAX_SYCL_SHARED` arena); the dead declarations are removed.
 - SYCL runtime loading hardened (`_bootstrap` / `build._load_sycl_dll`):
   sycl8.dll's own imports (libmmd from oneAPI's top-level `<ver>/bin`, not
   the compiler bin) are now preloaded in dependency order before warpsycl
