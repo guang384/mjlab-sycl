@@ -16,6 +16,8 @@ Task: `Mjlab-Velocity-Flat-MicroDuck` (14 servos, nv=20), 50 Hz control.
 .venv\Scripts\mjlab-sycl-bench.exe --device cpu   --num-envs 1024 --iters 2   # pure warp-cpu, no sycl patch
 # per-step API census (launches / drains / allocs per env step)
 python scripts\probe_sycl_profile.py --num-envs 4096 --steps 20
+# drain call-site attribution (which wrapper drains how often per step)
+python scripts\probe_drain_sites.py --num-envs 4096 --steps 20
 # per-kernel device time attribution (serialized; relative ranking valid)
 python scripts\probe_kernel_times.py --num-envs 4096 --steps 4
 # real efc usage vs compiled buffer (njmax padding audit)
@@ -27,6 +29,7 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 | config (4096 envs unless noted) | per-iteration wall | env-steps/s |
 |---|---|---|
 | sycl, PPO on **xpu** (default), selective-recompute refresh (2026-09-30) | mean 7.1 s (rollout 6.2 / ppo 0.9) | **15,762** |
+| sycl, PPO on **xpu** (default), 2026-10-01 re-check (3 runs, cold start) | mean 8.6 s (rollout 7.4 / ppo 1.2) | 13,276 |
 | sycl, PPO on **xpu** (default), graph-batch refresh (2026-09-30) | mean 8.3 s (rollout 7.3 / ppo 1.0) | 13,390 |
 | sycl, PPO on **xpu** (default), flat-kernel v2 refresh (2026-09-30, 2 runs) | mean 9.1 – 9.4 s | 11,835 – 11,940 |
 | sycl, PPO on **xpu** (default), post-fusion (2026-09-30, 3 runs) | mean 10.2 – 17.1 s (run-to-run clock variance) | 6,301 – 10,782 |
@@ -35,11 +38,17 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 | sycl, 8192 envs, PPO xpu | 37.3 s | 5,634 (+2.7 %) |
 | **pure warp-CPU device** (1024 envs) | 100.2 s | 246 |
 | sycl (1024 envs) | 7.6 s | 3,436 |
+| sycl (1024 envs), 2026-10-01 re-check | 3.9 s | 6,902 |
 
 - PPO xpu vs cpu: update 4.5 s -> 1.2 s/iter (~19 % faster iterations).
 - sycl vs same-stack pure CPU device: **~14x** (3436 vs 246 env-steps/s @1024).
 - Env-count scaling is flat beyond ~4096 (device saturated; doubling envs doubles
   per-step wall -> same samples/s).
+- 2026-10-01 re-check: cold-start runs land at 8.4-8.7 s/iter, ~20 % off the
+  09-30 best; after ~40 min of sustained GPU load the same binary measured
+  9.9-10.1 s. A same-process paired A/B of the (wall-neutral) drain fix saw
+  none of that gap, so treat session/thermal state as a +-20 % error bar on
+  every number in this file.
 
 ## Where env.step goes (census)
 
@@ -52,7 +61,11 @@ replay, measured 2026-09-30, 4096 envs):
   replays as ONE graph submission (4 graphs/step replace ~1,056
   per-kernel submits)
 - 7 queue drains/step: 4 solve-end convergence polls + lite forward +
-  Bvh refit + sensor finalize; ~7 % of wall waiting in drains
+  Bvh refit + sensor finalize; ~7 % of wall waiting in drains.  Call-site
+  attribution (scripts/probe_drain_sites.py) shows exactly these four
+  sites; a redundant pre-drain in the runtime_patch Bvh wrapper (the
+  overlay's Bvh.__init__/refit already drain for sycl instances) was found
+  and removed on 2026-10-01 -- before that the census counted 8.
 
 Budget map (measured 2026-09-30 with true per-kernel launch counts --
 cache hits bypass launch hooks, so hook-based counts under-sample ~3x):
@@ -107,6 +120,7 @@ default — kept for attribution):
 | selective kinematics/com_pos/crb for set_const recompute (copied prep kernels with world-id indirection) | unit A/B equivalent to 2e-4, but only ~0.8 ms/call at 4096 envs (4 reset ids): the cut stages are launch-bound at small nproc and factor_m stays all-world | reverted -- 400 lines of copied kernels not justified below the noise floor |
 | lite forward as one command graph (`graph_batch.run_sequence`) | ~15 submits/step -> 1; wall-neutral | kept (`MJLAB_SYCL_GRAPH`) |
 | sense() drain merge (sensor context already drains in finalize) | 8 -> 7 drains/step, no measurable wall change | kept |
+| Bvh pre-drain removal (runtime_patch wrapper; the overlay's Bvh.__init__/refit already drain sycl instances) | 8 -> 7 drains/step as designed; paired A/B old-new +2.4 ± 14.4 ms/step (n=5, ns) | kept (wall-neutral, one less sync) |
 | kernel args by-value capture (codegen) | ~1 % (noise); DPC++ also requires const kernel lambdas | dead end, reverted |
 | 8192 envs | +2.7 % | not worth wall 2x |
 | solver micro-kernel fusion (Route C) | infeasible here: fusion points need intra-world sync (barriers) which must never be added on the iGPU; only tiny per-world scalar merges remain (~1-2 %) | not viable, documented |

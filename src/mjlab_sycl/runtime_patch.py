@@ -231,13 +231,16 @@ def patch_simulation_for_sycl() -> None:
 
   sc_mod.SensorContext.finalize = finalize
 
-  # wp.Bvh on the sycl device (is_cpu=True) builds via the HOST constructor
-  # and refits via wp_bvh_refit_host: both read rc.lower/rc.upper USM that
-  # async device kernels just wrote — drain before each host read.
+  # wp.Bvh builds/refits via HOST code (wp_bvh_create_host /
+  # wp_bvh_refit_host) that reads rc.lower/rc.upper USM which async device
+  # kernels may still be writing.  The overlay's Bvh.__init__/refit already
+  # drain the sycl queue for sycl-device instances (types.py is_sycl
+  # branch); only non-sycl instances reading USM need the external flush.
   orig_bvh_init = wp.Bvh.__init__
 
   def bvh_init(self, lowers, uppers, constructor=None, groups=None, leaf_size=1):
-    drain()
+    if not getattr(lowers.device, "is_sycl", False):
+      drain()
     orig_bvh_init(self, lowers, uppers, constructor, groups, leaf_size)
 
   wp.Bvh.__init__ = bvh_init
@@ -245,7 +248,8 @@ def patch_simulation_for_sycl() -> None:
   orig_bvh_refit = wp.Bvh.refit
 
   def bvh_refit(self):
-    drain()
+    if not getattr(self.device, "is_sycl", False):
+      drain()
     orig_bvh_refit(self)
 
   wp.Bvh.refit = bvh_refit
