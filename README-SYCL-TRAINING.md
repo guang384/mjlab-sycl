@@ -25,7 +25,10 @@ footguns).
 
 - Windows, Python 3.12
 - Intel Arc iGPU (developed on Arc 130T / Lunar Lake)
-- mjlab 1.3.0, mujoco-warp, warp-lang 1.12.0, torch 2.9.1 (pinned in the package)
+- mjlab 1.3.0, mujoco-warp, warp-lang 1.12.0 (pinned in the package)
+- **torch 2.9.1+xpu** — the +xpu wheel from the PyTorch XPU index (per-machine,
+  see the torch XPU step in Install). The PyPI default is the CPU build: it
+  works, but PPO silently runs on CPU (~3x slower updates) with no error
 - **SYCL 2025.3+ runtime** — ~50 MB of pip wheels, no toolkit needed at
   runtime (audited: `warpsycl.dll` imports only `sycl8.dll` + `libmmd.dll`
   beyond the Windows system set, and the wheels cover both; verified to

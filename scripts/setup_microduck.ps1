@@ -86,6 +86,15 @@ if ($InstallTorchXpu) {
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
   Step-Hint "3/6  skipping torch XPU install (use -InstallTorchXpu to fetch it)"
+  # the CPU-wheel trap: a plain `pip install torch` installs the CPU build
+  # and PPO silently runs ~3x slower with no error. Detect and name it.
+  & $Py -c "import torch, sys; sys.exit(0 if torch.xpu.is_available() else 1)" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "    WARNING: torch has no XPU support -- PPO will silently run ~3x slower." -ForegroundColor Yellow
+    Write-Host "    A plain 'pip install torch' installs the CPU wheel (the trap)." -ForegroundColor Yellow
+    Write-Host "    Fix: re-run with -InstallTorchXpu, or:" -ForegroundColor Yellow
+    Write-Host "      $Py -m pip install `"torch==2.9.1+xpu`" --index-url https://download.pytorch.org/whl/xpu" -ForegroundColor Yellow
+  }
 }
 
 # 4. overlay the warp SYCL backend + self-check

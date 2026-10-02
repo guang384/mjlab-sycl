@@ -195,6 +195,8 @@ def main() -> None:
       "torch XPU",
       ok_xpu,
       f"{torch.__version__}, xpu available: {ok_xpu}",
+      'the CPU-wheel trap: a plain `pip install torch` installs the CPU '
+      'build and PPO silently runs ~3x slower -- install the +xpu wheel: '
       'pip install "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu '
       "(per-machine step, see README-SYCL-TRAINING.md)",
     )

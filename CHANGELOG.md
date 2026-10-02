@@ -8,6 +8,14 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **The torch CPU-wheel trap is now named everywhere** (a plain
+  `pip install torch` installs the CPU build; PPO silently falls back
+  to CPU and iterations run ~3x slower with no error): train/bench
+  print a loud warning with the exact +xpu-wheel command on the
+  fallback path, `mjlab-sycl-check` names the trap in its fix line,
+  setup_microduck.ps1 detects cpu-only torch when skipping the install,
+  and both READMEs state the requirement explicitly (torch 2.9.1+xpu
+  from the PyTorch XPU index, per-machine).
 - **No more multi-GB toolkit at runtime**: the oneAPI dependency is
   demoted to a dev-only requirement (rebuilding warpsycl.dll). The
   audited import table of warpsycl.dll is just sycl8.dll + libmmd.dll

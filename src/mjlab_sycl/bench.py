@@ -86,6 +86,12 @@ def main() -> None:
   ppo_device = os.environ.get("MJLAB_PPO_DEVICE") or (
     "xpu" if torch.xpu.is_available() else "cpu"
   )
+  if ppo_device == "cpu" and not os.environ.get("MJLAB_PPO_DEVICE"):
+    # the CPU-wheel trap (see train.py): no error, just ~3x slower PPO
+    print("[bench-sycl] WARNING: torch XPU unavailable -> PPO on cpu "
+          "(~3x slower updates). Likely the CPU wheel:", flush=True)
+    print('  pip install "torch==2.9.1+xpu" --index-url '
+          "https://download.pytorch.org/whl/xpu", flush=True)
   runner = MjlabOnPolicyRunner(env, dataclasses.asdict(agent_cfg), str(log_dir), ppo_device)
 
   # -- timing instrumentation ------------------------------------------------

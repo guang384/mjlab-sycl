@@ -77,7 +77,20 @@ def main() -> None:
   env = ManagerBasedRlEnv(cfg=env_cfg, device="cpu")
   env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-  ppo_device = args.ppo_device or ("xpu" if torch.xpu.is_available() else "cpu")
+  if args.ppo_device:
+    ppo_device = args.ppo_device
+  elif torch.xpu.is_available():
+    ppo_device = "xpu"
+  else:
+    ppo_device = "cpu"
+    # the CPU-wheel trap: a plain `pip install torch` installs the CPU
+    # build, PPO silently falls back here, and iterations run ~3x slower
+    # with no error anywhere (measured: 4.5 vs 1.2 s/iter PPO update).
+    print("[train-sycl] WARNING: torch XPU unavailable -> PPO falls back to CPU", flush=True)
+    print("  measured cost: PPO update 4.5 s/iter (cpu) vs 1.2 s (xpu). If you did", flush=True)
+    print("  not choose this, your torch is likely the CPU wheel -- a plain", flush=True)
+    print("  `pip install torch` gets exactly that. Fix:", flush=True)
+    print('  pip install "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu', flush=True)
   print(f"[train-sycl] PPO on {ppo_device}")
 
   log_dir = Path("logs") / agent_cfg.experiment_name

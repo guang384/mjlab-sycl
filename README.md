@@ -36,9 +36,14 @@ What it bundles:
 # 2. overlay the warp SYCL backend + self-check
 <project>\.venv\Scripts\python.exe -m mjlab_sycl install
 
-# 3. environment preflight (read-only): platform, overlay sync, oneAPI,
-#    Intel GPU, a real device kernel vs cpu, torch XPU, task registry
+# 3. environment preflight (read-only): platform, overlay sync, SYCL
+#    runtime, Intel GPU, a real device kernel vs cpu, torch XPU, task registry
 <project>\.venv\Scripts\mjlab-sycl-check.exe
+
+# torch MUST be the +xpu wheel -- a plain `pip install torch` installs the
+# CPU build and PPO silently runs ~3x slower (no error!). If the check
+# reports "torch XPU" as FAIL:
+<project>\.venv\Scripts\python.exe -m pip install "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu
 ```
 
 Then train any registered task:
