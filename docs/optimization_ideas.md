@@ -65,42 +65,22 @@ content-hashed so both variants coexist on disk.)
 
 Scope: `_make_cholesky_solve_kernel` (~9 launches/step, ~1 ms), the set-const
 `_make_cholesky_factorize_solve_kernel` (~2/step, ~2.5 ms), i.e. the ~18 %
-device-time share. Three routes, in committed order:
+device-time share. The vendor-library route (T1d) is measured dead; the
+hand-written reschedule (T1c) is the live path.
 
-### T1d — oneMKL batched `potrf_batch` + `potrs_batch` (try first)
+### T1d — oneMKL batched `potrf_batch` + `potrs_batch` — **measured dead end (2026-10-02)**
 
-- **Mechanism.** Replace the per-world scalar LLT with oneMKL's SYCL-domain
-  batched LAPACK: one call factorizes and one call solves all 4096
-  20×20 SPD systems with vendor-tuned kernels.
-- **Feasibility (verified, not assumed).** oneAPI 2025.3 on this machine
-  ships `oneapi/mkl/lapack/lapack.hpp` with `potrf_batch` / `potrs_batch`
-  (float, grouped pointer-array interface) and `mkl_sycl.lib` to link into
-  `warpsycl.dll`; call it from Python through the same ctypes seam as the
-  graph API (`graph_batch._api()` pattern). Layout facts checked: our L is
-  `(nworld, nv_pad, nv_pad)` contiguous USM, so per-world pointers are
-  `base + w·nv_pad²` — build the 4096-pointer device array once per scratch
-  lifetime (the `_CHOL_STATE` cache already keys buffer lifetimes). Row-major
-  lower-L ⇔ column-major upper-L on the same bytes, so `uplo=U` on the
-  column-major view produces exactly our lower-triangular layout with **zero
-  copies/transposes**; `n = nv = 20`, `lda = ldb = nv_pad = 20` for microduck
-  (nv is a multiple of 4 here; guard `nv == nv_pad`, else fall back).
-  `h = qM + JᵀDJ` is SPD (qM SPD, JᵀDJ PSD), which is potrf's contract.
-- **Safety.** Kill switch: route only when `nv == nv_pad` and a new
-  `MJLAB_SYCL_MKL_CHOL` is on; any query/scratchpad failure falls back to the
-  flat kernel (same seam the LLT-skip already uses). Failure mode on
-  degenerate (non-PD) h: oneMKL leaves garbage in the factor + info — the
-  current kernel's failure mode there is NaN from `sqrt(negative)`, so this
-  is not a new class of breakage.
-- **Numerics.** NOT bit-identical: vendor accumulation order differs →
-  ULP-level (~1e-7 relative) differences per factorization. The Newton
-  solver is tolerance-driven (improvement/gradient tests at ~1e-6 scale) and
-  self-correcting, so ULP-level factor differences stay far below both the
-  1e-5 physics gate and solver tolerance. Validation: physics gate + a
-  200-iteration paired training A/B (reward curves within run noise).
-- **Expected gain (estimate).** 3–5× on the chol family → ~10–14 % of device
-  time → **~5–8 % end-to-end**. Effort: 2–4 days incl. DLL rebuild and gates.
-
-### T1c — native sub_group-cooperative LLT in the backend
+Implemented, correctness-gated (ULP-level PASS vs numpy: 1.9e-07 on L,
+4.1e-07 on x, residual 1.2e-06), and measured a **135x regression**: 137.5
+ms/call at batch 4096 (17.2 at 512 — linear in batch) vs the flat kernel's
+~1 ms; end-to-end probe 273 -> 3,275 ms/step. oneMKL's strided batched
+LAPACK submits per-matrix internally — it is built for large-n x modest-batch,
+the exact opposite of our 20x20 x 4096 shape. Fully reverted; the verdict
+lives in `performance.md`'s attempts table. What the attempt validated and
+survives for T1c: the DLL rebuild + MKL link recipe (REBUILD.md), the
+ctypes export seam, the a->L / b->x staging-copy requirement (the
+incremental Hessian accumulates onto `a`), and the row-major/upper-L
+layout equivalence.
 
 - **Mechanism.** One `sycl::sub_group` (16 lanes on Xe2) per world; L
   distributed across lanes (400/16 = 25 floats per lane — **fits in
@@ -239,12 +219,12 @@ T1c fail.
 
 ## Suggested order
 
-1. **T1d** (oneMKL batched chol) — best gain/effort, verified API, 2–4 d.
-2. **T2** (jv row-block) — ≤1 d, bit-identical.
-3. **T5** (substep graphs) — safe-by-construction arming, 1–2 d.
-4. **T3** (efc atomics) — ~1 d, deterministic-order bonus.
-5. **T1c** (sub_group LLT) if T1d disappoints or gates demand bit-exactness.
-6. **T4** (compaction) — last; the biggest and only genuinely intricate one.
+1. **T2** (jv row-block) — ≤1 d, bit-identical.
+2. **T5** (substep graphs) — safe-by-construction arming, 1–2 d.
+3. **T3** (efc atomics) — ~1 d, deterministic-order bonus.
+4. **T1c** (sub_group LLT) — the chol family's live path after T1d's
+   measured death; the DLL/ctypes seam it needs is already proven.
+5. **T4** (compaction) — last; the biggest and only genuinely intricate one.
 
 Every step gates through `mjlab-sycl-test` plus a paired bench A/B
 (`performance.md` reproduce block), and lands default-off behind its own
