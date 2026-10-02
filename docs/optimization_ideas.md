@@ -260,7 +260,17 @@ Every kernel-schedule candidate has now been measured except T4:
   compaction design was meant to open.
 - Outside kernel schedules, the measured levers that remain are the
   thermal/session error bar itself (+-20 %, larger than every candidate
-  here) and the ITER=6 knob (-3.7 %, pending policy-quality validation).
+  here) and the ITER=6 knob (-3.7 % pre-graph; +1.4 % = noise after).
+- **Bandwidth ceiling, corrected 2026-10-02 by microbenchmark**: the
+  device achieves ~80-88 GB/s (torch.xpu copy 87-88 r+w, read-only sum
+  79-81; ~65 % of the ~136 GB/s LPDDR5X-8533 x 128-bit theoretical), so
+  the jv family's ~43 GB/s effective is NOT the hardware wall -- ~2x
+  pattern headroom exists. It is trapped: lane-coalesced J reads need
+  cross-lane reductions (breaks bit-exactness) or the measured wash of
+  the row-block schedule. The one unexplored lever is L2 residency
+  (real-rows J ~15 MB vs ~16 MB Xe2 L2, re-read ~8x per solve), via
+  Level Zero cache-policy extensions if ever; the precision lever
+  (fp16/bf16 J) halves the bytes but violates the accuracy contract.
 
 Every step gates through `mjlab-sycl-test` plus a paired bench A/B
 (`performance.md` reproduce block), and lands default-off behind its own
