@@ -261,6 +261,24 @@ Every kernel-schedule candidate has now been measured except T4:
 - Outside kernel schedules, the measured levers that remain are the
   thermal/session error bar itself (+-20 %, larger than every candidate
   here) and the ITER=6 knob (-3.7 % pre-graph; +1.4 % = noise after).
+- **The warp codegen bandwidth gap (found 2026-10-02, OPEN -- the biggest
+  remaining software lever).** A warp-language streaming-sum kernel over
+  256 MB caps at ~42 GB/s (block_dim sweep 32->1024: 30 -> 42, flat after)
+  on the same device where torch.xpu's copy kernel streams 87-88 GB/s --
+  so the wall is in the warp->SYCL generated code / launch path, not the
+  memory system, and we OWN that layer (backend/_src). Item mapping is
+  ruled out (row-per-item and linear-stream variants cap identically);
+  block_dim helps 40 % then flat. Remaining hypotheses, each cheap to
+  test with a standalone DPC++ stream benchmark (scalar vs vectorized
+  16B loads x shared vs device USM, plus cache-hint variants): warp
+  emits scalar 4B loads where torch vectorizes; warp's shared-USM
+  allocations may take a different caching path than torch's device USM;
+  torch may use streaming/non-temporal cache policy. If backend tuning
+  recovers even half the gap, EVERY bandwidth-bound kernel in the step
+  (jv, JTDAJ, contact, efc -- the dominant families) speeds up ~1.5-2x;
+  nothing else on this page comes close. Confirm with the e2e gates:
+  this is codegen-level, not numerics-level, so bit-exactness is
+  unaffected.
 - **Bandwidth ceiling, corrected 2026-10-02 by microbenchmark**: the
   device achieves ~80-88 GB/s (torch.xpu copy 87-88 r+w, read-only sum
   79-81; ~65 % of the ~136 GB/s LPDDR5X-8533 x 128-bit theoretical), so
