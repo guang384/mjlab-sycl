@@ -907,6 +907,150 @@ WP_SYCL_API int wp_sycl_jaref(const void* jv, const void* alpha, const int* nefc
     }
 }
 
+// ---- fused prepare_quad + prepare_gauss (bit-exact native rewrite) --------
+//
+// The fused_linesearch._quad_gauss_fused contract verbatim: item (world, 0)
+// runs the per-world gauss reduction (dofs_per_thread >= nv case: single
+// writer, no atomics), rows >= nefc return, per-row quad = (0.5*Jaref^2*D,
+// jv*Jaref*D, 0.5*jv^2*D) with the elliptic-cone branch writing quad1/quad2
+// to the cone's rows 1/2 from its row-0 item (single writer per row, same
+// early-return structure as the warp kernel).
+
+WP_SYCL_API int wp_sycl_quad_gauss(
+    const void* impratio_invsqrt,
+    const int* nefc,
+    const void* contact_friction, const int* contact_dim,
+    const int* contact_efc_address,
+    const int* efc_type, const int* efc_id,
+    const void* efc_D, const int* nacon,
+    const void* Jaref, const void* jv,
+    const unsigned char* done,
+    const void* qfrc_smooth, const void* efc_Ma,
+    const void* search, const void* gauss, const void* mv,
+    void* quad_out, void* quad_gauss_out,
+    long long impratio_n, long long nv,
+    long long efc_stride, long long ctx_stride,
+    long long nv_stride, long long adr_stride,
+    long long batch) {
+    if (batch <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_quad_gauss");
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                const int lane = static_cast<int>(it.get_local_linear_id());
+                constexpr int kElliptic = 1;  // ConstraintType.CONTACT_ELLIPTIC
+
+                // ---- prepare_gauss fold: work-item (world, 0) only --------
+                if (lane == 0) {
+                    const auto* s = static_cast<const float*>(search) +
+                        static_cast<size_t>(w) * nv_stride;
+                    const auto* ma = static_cast<const float*>(efc_Ma) +
+                        static_cast<size_t>(w) * nv_stride;
+                    const auto* qs = static_cast<const float*>(qfrc_smooth) +
+                        static_cast<size_t>(w) * nv_stride;
+                    const auto* mvw = static_cast<const float*>(mv) +
+                        static_cast<size_t>(w) * nv_stride;
+                    float g1 = 0.0f, g2 = 0.0f;
+                    for (int i = 0; i < nv; ++i) {
+                        const float si = s[i];
+                        g1 += si * (ma[i] - qs[i]);
+                        g2 += 0.5f * si * mvw[i];
+                    }
+                    float* qg = static_cast<float*>(quad_gauss_out) +
+                        static_cast<size_t>(w) * 3;
+                    const float* g0 = static_cast<const float*>(gauss);
+                    qg[0] = g0[w];
+                    qg[1] = g1;
+                    qg[2] = g2;
+                }
+
+                if (done[w]) return;
+
+                // ---- prepare_quad per row --------------------------------
+                const auto* Jw = static_cast<const float*>(Jaref) +
+                    static_cast<size_t>(w) * ctx_stride;
+                const auto* jvw = static_cast<const float*>(jv) +
+                    static_cast<size_t>(w) * ctx_stride;
+                const auto* Dw = static_cast<const float*>(efc_D) +
+                    static_cast<size_t>(w) * efc_stride;
+                const auto* typ = efc_type + static_cast<size_t>(w) * efc_stride;
+                const auto* ids = efc_id + static_cast<size_t>(w) * efc_stride;
+                float* quw = static_cast<float*>(quad_out) +
+                    static_cast<size_t>(w) * ctx_stride * 3;
+                const int nef = nefc[w];
+
+                for (int e = lane; e < ctx_stride; e += 32) {
+                    if (e >= nef) return;
+                    const float Jaref_e = Jw[e];
+                    const float jv_e = jvw[e];
+                    const float D_e = Dw[e];
+                    float q0 = 0.5f * Jaref_e * Jaref_e * D_e;
+                    float q1 = jv_e * Jaref_e * D_e;
+                    float q2 = 0.5f * jv_e * jv_e * D_e;
+
+                    if (typ[e] == kElliptic) {
+                        const int conid = ids[e];
+                        const int* adr = contact_efc_address +
+                            static_cast<size_t>(conid) * adr_stride;
+                        if (conid >= nacon[0]) return;
+                        const int efcid0 = adr[0];
+                        if (e != efcid0) return;
+                        const int dim = contact_dim[conid];
+                        const float* fr = static_cast<const float*>(contact_friction) +
+                            static_cast<size_t>(conid) * 5;
+                        const float* iis = static_cast<const float*>(impratio_invsqrt);
+                        const float mu = fr[0] * iis[w % impratio_n];
+                        const float u0 = Jaref_e * mu;
+                        const float v0 = jv_e * mu;
+                        float uu = 0.0f, uv = 0.0f, vv = 0.0f;
+                        for (int j = 1; j < dim; ++j) {
+                            const int efcidj = adr[j];
+                            if (efcidj < 0) return;
+                            const float jvj = jvw[efcidj];
+                            const float jarefj = Jw[efcidj];
+                            const float dj = Dw[efcidj];
+                            const float DJj = dj * jarefj;
+                            q0 += 0.5f * jarefj * DJj;
+                            q1 += jvj * DJj;
+                            q2 += 0.5f * jvj * dj * jvj;
+                            const float fj = fr[j - 1];
+                            const float uj = jarefj * fj;
+                            const float vj = jvj * fj;
+                            uu += uj * uj;
+                            uv += uj * vj;
+                            vv += vj * vj;
+                        }
+                        const int efcid1 = adr[1];
+                        float* q1w = quw + static_cast<size_t>(efcid1) * 3;
+                        q1w[0] = u0;
+                        q1w[1] = v0;
+                        q1w[2] = uu;
+                        const float mu2 = mu * mu;
+                        const int efcid2 = adr[2];
+                        float* q2w = quw + static_cast<size_t>(efcid2) * 3;
+                        q2w[0] = uv;
+                        q2w[1] = vv;
+                        q2w[2] = D_e / (mu2 * (1.0f + mu2));
+                    }
+
+                    float* qe = quw + static_cast<size_t>(e) * 3;
+                    qe[0] = q0;
+                    qe[1] = q1;
+                    qe[2] = q2;
+                }
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_quad_gauss failed: %s\n", e.what());
+        return -1;
+    }
+}
+
 // CRT helpers expected by generated kernel modules (declared in crt.h).
 // Host-side implementations; kernels that call these from device code are
 // not supported yet.

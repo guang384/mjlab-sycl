@@ -8,6 +8,15 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Native fused quad_gauss kernel** (`wp_sycl_quad_gauss`,
+  `MJLAB_SYCL_NATIVE_QUAD=0` to disable): the prepare_quad+prepare_gauss
+  fusion re-implemented natively -- unit-verified BIT-EXACT (0.0) on the
+  pyramidal path, elliptic-cone branch ported verbatim. Measured
+  wall-neutral (swapped-order A/B +1.8 % / -0.3 %, mean inside noise):
+  at (nworld, njmax) the grid already saturates the device so only the
+  codegen delta remains (same lesson as the jv reschedule). Kept on the
+  wall-neutral/bit-exact standard. Completes the native rewrite of every
+  top-10 kernel family (8 native kernels total).
 - **Native qfrc_constraint + fused jaref kernels** (`wp_sycl_qfrc_constraint`,
   `wp_sycl_jaref`; kill switches `MJLAB_SYCL_NATIVE_QFRC` /
   `MJLAB_SYCL_NATIVE_JAREF`): J^T @ force and the fused linesearch-jaref +

@@ -116,6 +116,23 @@ WP_SYCL_API int wp_sycl_jaref(const void* jv, const void* alpha, const int* nefc
                               void* prev_cost, void* grad_dot, void* search_dot,
                               void* changed_count, long long njmax,
                               long long batch);
+// Fused prepare_quad + prepare_gauss (bit-exact; see the .cpp).
+WP_SYCL_API int wp_sycl_quad_gauss(
+    const void* impratio_invsqrt,
+    const int* nefc,
+    const void* contact_friction, const int* contact_dim,
+    const int* contact_efc_address,
+    const int* efc_type, const int* efc_id,
+    const void* efc_D, const int* nacon,
+    const void* Jaref, const void* jv,
+    const unsigned char* done,
+    const void* qfrc_smooth, const void* efc_Ma,
+    const void* search, const void* gauss, const void* mv,
+    void* quad_out, void* quad_gauss_out,
+    long long impratio_n, long long nv,
+    long long efc_stride, long long ctx_stride,
+    long long nv_stride, long long adr_stride,
+    long long batch);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

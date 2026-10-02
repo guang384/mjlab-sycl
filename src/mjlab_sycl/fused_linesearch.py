@@ -384,6 +384,15 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
       m = _CTX._model
       # gauss inputs = [qfrc_smooth, efc.Ma, search, gauss, mv, done]; its
       # done (gin[5]) is the same array as quad's ctx_done (inputs[11])
+      from mjlab_sycl import native_kernels
+
+      if native_kernels.quad_gauss(
+          inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5],
+          inputs[6], inputs[7], inputs[8], inputs[9], inputs[10], inputs[11],
+          m.nv, gin[0], gin[1], gin[2], gin[3], gin[4],
+          outputs[0], gout[0],
+      ):
+        return None  # the native kernel ran; suppress the warp launch
       return _prev_launch(
         _quad_gauss_fused,
         dim,

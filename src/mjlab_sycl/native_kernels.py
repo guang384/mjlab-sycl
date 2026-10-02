@@ -23,6 +23,7 @@ _fn_chol_fs = None
 _fn_hinc = None
 _fn_qfrc = None
 _fn_jaref = None
+_fn_quad = None
 _probed = False
 
 
@@ -43,7 +44,7 @@ def _is_sycl(arr) -> bool:
 
 def _api():
     """Resolve the DLL exports once; None means unavailable (stale DLL)."""
-    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _fn_qfrc, _fn_jaref, _probed
+    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _fn_qfrc, _fn_jaref, _fn_quad, _probed
     if _probed:
         return _fn_mv_jv
     _probed = True
@@ -94,6 +95,13 @@ def _api():
             _fn_jaref = fj
         except AttributeError:
             _fn_jaref = None
+        try:
+            fq2 = dll.wp_sycl_quad_gauss
+            fq2.restype = ctypes.c_int
+            fq2.argtypes = [ctypes.c_void_p] * 19 + [ctypes.c_longlong] * 7  # ptrs then scalars
+            _fn_quad = fq2
+        except AttributeError:
+            _fn_quad = None
     except Exception:
         _fn_mv_jv = None
     return _fn_mv_jv
@@ -207,3 +215,23 @@ def jaref(jv, alpha, nefc, done, cost, Jaref, gauss, cost_out, prev_cost,
               gauss.ptr, cost_out.ptr, prev_cost.ptr, grad_dot.ptr,
               search_dot.ptr, changed_count.ptr, Jaref.shape[1],
               Jaref.shape[0]) == 0
+
+
+def quad_gauss(impratio, nefc, friction, dim_, adr, efc_type, efc_id, efc_D,
+               nacon, Jaref, jv, done, nv, qfrc_smooth, efc_Ma, search,
+               gauss, mv, quad_out, quad_gauss_out) -> bool:
+    """Native fused prepare_quad + prepare_gauss. Returns True when it ran."""
+    if not _enabled("MJLAB_SYCL_NATIVE_QUAD"):
+        return False
+    if not _is_sycl(Jaref):
+        return False
+    _api()
+    fn = _fn_quad
+    if fn is None:
+        return False
+    return fn(impratio.ptr, nefc.ptr, friction.ptr, dim_.ptr, adr.ptr,
+              efc_type.ptr, efc_id.ptr, efc_D.ptr, nacon.ptr, Jaref.ptr,
+              jv.ptr, done.ptr, qfrc_smooth.ptr, efc_Ma.ptr, search.ptr,
+              gauss.ptr, mv.ptr, quad_out.ptr, quad_gauss_out.ptr,
+              impratio.shape[0], nv, efc_D.shape[1], Jaref.shape[1],
+              search.shape[1], adr.shape[1], Jaref.shape[0]) == 0
