@@ -7,6 +7,18 @@ All notable changes to mjlab-sycl.
 <!-- Add new changes here as they land; fold into a dated release section when
      tagging. -->
 
+## [0.3.0] - 2026-10-02 — performance + memory + quality release
+
+Measured end-to-end on an Arc 130T (microduck velocity, 4096 envs):
+**~19-23k env-steps/s depending on desktop/GPU state** (the 0.2.0 archive
+was 5,485; every gain is itemized below and in docs/performance.md).
+Physics vs the same-model CPU reference stays at ~3e-06 / 1.86e-08
+(unchanged). Highlights: whole-substep command graphs (+8-11 %), an
+11-kernel native SYCL series (+10-12 %), adaptive njmax (1.72x, landed
+just before 0.2.0), collision workspace pooling (-18 GB of alloc churn),
+a 6-verdict gate chain that catches fusion-contract regressions, a ~50 MB
+pip runtime instead of the multi-GB oneAPI toolkit, and a bilingual README.
+
 ### Added
 - **Native gauss_cost + linesearch teardown**
   (`MJLAB_SYCL_NATIVE_GAUSS` / `MJLAB_SYCL_NATIVE_LSTD`): bit-exact
