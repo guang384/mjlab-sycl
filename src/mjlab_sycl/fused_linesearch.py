@@ -348,6 +348,15 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
       ctx = _CTX
       m = ctx._model
       d = ctx._data
+      from mjlab_sycl import native_kernels
+
+      if native_kernels.ls_teardown(
+          m.opt.ls_iterations, m.opt.ls_parallel_min_step,
+          inputs[3] if len(inputs) > 3 else ctx._cost,
+          ctx.done, ctx.search, ctx.mv, m.nv,
+          ctx.alpha, d.qacc, d.efc.Ma,
+      ):
+        return None  # the native kernel ran; suppress the warp launch
       return _prev_launch(
         _ls_teardown_fused,
         dim=d.nworld,

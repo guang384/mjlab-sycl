@@ -156,6 +156,19 @@ WP_SYCL_API int wp_sycl_efc_force(
 WP_SYCL_API int wp_sycl_cost_fold(const void* partial, const int* nefc,
                                   const unsigned char* done, void* cost_out,
                                   long long ctx_stride, long long batch);
+// gauss_cost + linesearch teardown (bit-exact per-world rewrites; .cpp).
+WP_SYCL_API int wp_sycl_gauss_cost(
+    const void* qacc, const void* qfrc_smooth, const void* qacc_smooth,
+    const void* Ma, const unsigned char* done,
+    void* gauss, void* cost,
+    long long nv, long long stride, long long batch);
+WP_SYCL_API int wp_sycl_ls_teardown(
+    long long ls_iterations, float min_step,
+    const void* cost_in, const unsigned char* done,
+    const void* search, const void* mv,
+    long long nv,
+    void* alpha_out, void* qacc_out, void* Ma_out,
+    long long cost_stride, long long nv_stride, long long batch);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

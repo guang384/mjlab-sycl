@@ -259,6 +259,22 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
         return None  # the native kernel ran; suppress the warp launch
       return _prev_launch(kernel, dim, inputs, outputs, *args, **kwargs)
 
+    if key == "update_constraint_gauss_cost__locals__kernel":
+      from mjlab_sycl import native_kernels
+
+      # single-writer variant only (dofs_per_thread >= nv); the atomic
+      # multi-writer variant keeps the upstream kernel. The factory tag
+      # makes the routing decision stable across graph count/record runs.
+      if (
+          getattr(kernel, "_mjlab_dpt", -1) >= getattr(kernel, "_mjlab_nv", 1 << 30)
+          and native_kernels.gauss_cost(
+              inputs[0], inputs[1], inputs[2], inputs[3], inputs[4],
+              outputs[0], outputs[1], getattr(kernel, "_mjlab_nv", 0),
+          )
+      ):
+        return None  # the native kernel ran; suppress the warp launch
+      return _prev_launch(kernel, dim, inputs, outputs, *args, **kwargs)
+
     if key in _SUPPRESS:
       return None  # already zeroed by the jaref tail
 
@@ -329,6 +345,20 @@ def install() -> None:
     return k
 
   solver.update_constraint_efc = _efc_factory_tracked
+
+  # tag gauss_cost kernels with their factory args (route selector)
+  _orig_gauss_factory = solver.update_constraint_gauss_cost
+
+  def _gauss_factory_tracked(nv, dofs_per_thread):
+    k = _orig_gauss_factory(nv, dofs_per_thread)
+    try:
+      k._mjlab_nv = int(nv)
+      k._mjlab_dpt = int(dofs_per_thread)
+    except Exception:
+      pass
+    return k
+
+  solver.update_constraint_gauss_cost = _gauss_factory_tracked
 
   _orig_solver_iteration = solver._solver_iteration
 

@@ -26,6 +26,8 @@ _fn_jaref = None
 _fn_quad = None
 _fn_efc = None
 _fn_fold = None
+_fn_gauss = None
+_fn_lstd = None
 _probed = False
 
 
@@ -46,7 +48,7 @@ def _is_sycl(arr) -> bool:
 
 def _api():
     """Resolve the DLL exports once; None means unavailable (stale DLL)."""
-    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _fn_qfrc, _fn_jaref, _fn_quad, _fn_efc, _fn_fold, _probed
+    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _fn_qfrc, _fn_jaref, _fn_quad, _fn_efc, _fn_fold, _fn_gauss, _fn_lstd, _probed
     if _probed:
         return _fn_mv_jv
     _probed = True
@@ -109,6 +111,18 @@ def _api():
         except AttributeError:
             _fn_efc = None
             _fn_fold = None
+        try:
+            fg = dll.wp_sycl_gauss_cost
+            fg.restype = ctypes.c_int
+            fg.argtypes = [ctypes.c_void_p] * 7 + [ctypes.c_longlong] * 3
+            _fn_gauss = fg
+            fl = dll.wp_sycl_ls_teardown
+            fl.restype = ctypes.c_int
+            fl.argtypes = [ctypes.c_longlong, ctypes.c_float] + [ctypes.c_void_p] * 4 + [ctypes.c_longlong] + [ctypes.c_void_p] * 3 + [ctypes.c_longlong] * 3
+            _fn_lstd = fl
+        except AttributeError:
+            _fn_gauss = None
+            _fn_lstd = None
         try:
             fq2 = dll.wp_sycl_quad_gauss
             fq2.restype = ctypes.c_int
@@ -231,6 +245,37 @@ def cost_fold(partial, nefc, done, cost, ctx_stride: int) -> bool:
         return False
     return fn(partial.ptr, nefc.ptr, done.ptr, cost.ptr, ctx_stride,
               partial.shape[0]) == 0
+
+
+def gauss_cost(qacc, qfrc_smooth, qacc_smooth, Ma, done, gauss, cost,
+               nv: int) -> bool:
+    """Native update_constraint_gauss_cost (single-writer per world)."""
+    if not _enabled("MJLAB_SYCL_NATIVE_GAUSS"):
+        return False
+    if not _is_sycl(qacc):
+        return False
+    _api()
+    fn = _fn_gauss
+    if fn is None:
+        return False
+    return fn(qacc.ptr, qfrc_smooth.ptr, qacc_smooth.ptr, Ma.ptr, done.ptr,
+              gauss.ptr, cost.ptr, nv, qacc.shape[1], qacc.shape[0]) == 0
+
+
+def ls_teardown(ls_iterations: int, min_step: float, cost, done, search, mv,
+                nv: int, alpha, qacc, Ma) -> bool:
+    """Native fused best_alpha + qacc_ma teardown."""
+    if not _enabled("MJLAB_SYCL_NATIVE_LSTD"):
+        return False
+    if not _is_sycl(qacc):
+        return False
+    _api()
+    fn = _fn_lstd
+    if fn is None:
+        return False
+    return fn(ls_iterations, ctypes.c_float(min_step), cost.ptr, done.ptr,
+              search.ptr, mv.ptr, nv, alpha.ptr, qacc.ptr, Ma.ptr,
+              cost.shape[1], qacc.shape[1], qacc.shape[0]) == 0
 
 
 def pool_stats() -> tuple:

@@ -1283,6 +1283,99 @@ WP_SYCL_API int wp_sycl_cost_fold(const void* partial, const int* nefc,
     }
 }
 
+// ---- gauss_cost + linesearch teardown (bit-exact native rewrites) ----------
+//
+// Both are per-world single-writer kernels with sequential accumulation
+// chains -- one item per world keeps the exact op order of the warp
+// originals (pure FMA chains: bit-identical).
+
+WP_SYCL_API int wp_sycl_gauss_cost(
+    const void* qacc, const void* qfrc_smooth, const void* qacc_smooth,
+    const void* Ma, const unsigned char* done,
+    void* gauss, void* cost,
+    long long nv, long long stride, long long batch) {
+    if (batch <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_gauss_cost");
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                if (done[w] || it.get_local_linear_id() != 0) return;
+                const float* qa = (const float*)qacc + (size_t)w * stride;
+                const float* qs = (const float*)qfrc_smooth + (size_t)w * stride;
+                const float* q0 = (const float*)qacc_smooth + (size_t)w * stride;
+                const float* ma = (const float*)Ma + (size_t)w * stride;
+                float g = 0.0f;
+                for (int i = 0; i < nv; ++i) {
+                    g += (ma[i] - qs[i]) * (qa[i] - q0[i]);
+                }
+                ((float*)gauss)[w] += 0.5f * g;
+                ((float*)cost)[w] += 0.5f * g;
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_gauss_cost failed: %s\n", e.what());
+        return -1;
+    }
+}
+
+WP_SYCL_API int wp_sycl_ls_teardown(
+    long long ls_iterations, float min_step,
+    const void* cost_in, const unsigned char* done,
+    const void* search, const void* mv,
+    long long nv,
+    void* alpha_out, void* qacc_out, void* Ma_out,
+    long long cost_stride, long long nv_stride, long long batch) {
+    if (batch <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_ls_teardown");
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                if (done[w] || it.get_local_linear_id() != 0) return;
+                // best_alpha: scan the candidate costs (first minimum wins)
+                const float* cw = (const float*)cost_in + (size_t)w * cost_stride;
+                int bestid = 0;
+                float best = 1e30f;  // MJ_MAXVAL
+                for (int i = 0; i < ls_iterations; ++i) {
+                    const float c = cw[i];
+                    if (c < best) {
+                        best = c;
+                        bestid = i;
+                    }
+                }
+                // _log_scale inline: log(1.0) == 0 exactly
+                const float log_min = sycl::log(min_step);
+                const float denom =
+                    (ls_iterations - 1) > 1 ? (float)(ls_iterations - 1) : 1.0f;
+                const float step = (0.0f - log_min) / denom;
+                const float alpha = sycl::exp(log_min + (float)bestid * step);
+                ((float*)alpha_out)[w] = alpha;
+                // qacc_ma
+                float* qa = (float*)qacc_out + (size_t)w * nv_stride;
+                float* ma = (float*)Ma_out + (size_t)w * nv_stride;
+                const float* se = (const float*)search + (size_t)w * nv_stride;
+                const float* mvw = (const float*)mv + (size_t)w * nv_stride;
+                for (int d = 0; d < nv; ++d) {
+                    qa[d] += alpha * se[d];
+                    ma[d] += alpha * mvw[d];
+                }
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_ls_teardown failed: %s\n", e.what());
+        return -1;
+    }
+}
+
 // CRT helpers expected by generated kernel modules (declared in crt.h).
 // Host-side implementations; kernels that call these from device code are
 // not supported yet.

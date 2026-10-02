@@ -8,6 +8,13 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Native gauss_cost + linesearch teardown**
+  (`MJLAB_SYCL_NATIVE_GAUSS` / `MJLAB_SYCL_NATIVE_LSTD`): bit-exact
+  single-writer ports (ls_teardown ULP-level on alpha via log/exp)
+  closing the visible-kernel native series at 11 natives; wall-neutral
+  in swapped A/B (+0.2 / +1.4 %), kept per that standard.
+- `docs/upstream-notes.md`: ready-to-send fix for the bam
+  `_dof_friction_fo` zero-fill churn (1.25 GB alloc/free per 2 iters).
 - **Native update_constraint_efc + deterministic cost fold**
   (`MJLAB_SYCL_NATIVE_EFC`): force/state/change-tracking bit-identical
   (unit-verified incl. true elliptic-cone rows), per-row cost partials
