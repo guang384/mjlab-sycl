@@ -175,3 +175,30 @@ default — kept for attribution):
   memory bandwidth GDDR7 ~15-18x LPDDR5X-class iGPU.
 - Wall-clock projection (tricks ~1000 iters, gaits 4000-6000 iters):
   this iGPU ~5.5 h / 21-32 h; RTX 5090-class ~12 min / 50-75 min.
+
+## Memory map (measured 2026-10-02, 4096 envs, microduck velocity)
+
+Lunar Lake has unified memory (no discrete VRAM): "GPU memory" and system
+RAM draw from the same LPDDR5X pool. Full training loop (probe_training_memory.py),
+peak after 2 PPO iterations: **RSS ~7.8 GB** decomposed as:
+
+| component | size | notes |
+|---|---|---|
+| process baseline (python/torch/warp + JIT) | ~1.6 GB | not reclaimable |
+| warp USM pool (collide workspaces + Data + solver scratch) | ~2.9 GB | after the workspace pool fix; was 5.0 GB live + 2.5 GB free-list churn |
+| torch.xpu pool (PPO rollout/policy/opt states) | 572 MB reserved, 77 MB live | `torch.xpu.empty_cache()` reclaims 472 MB |
+| **torch CPU transients retained by the allocator** | **~3.4 GB** | Python heap delta is only ~5 MB (tracemalloc); the churn is C-level |
+
+The dominant CPU transient is `bam.mjlab._dof_friction_fo` (BamActuator's
+friction term): two `torch.zeros_like(efc_force)` (4096x168, 2.6 MB each)
+per act call -- ~1.25 GB of alloc/free churn per 2 iterations. The two
+zeros_like are `torch.where` fillers; `torch.where(cond, x, 0)` (scalar
+fill) is bit-identical and removes both allocations -- recommend upstream
+in the bam task package. Remaining unattributed transients are in the
+same class (per-step reward/obs temporaries kept by the CPU allocator).
+
+Levers by ROI: the collision workspace pool + USM trim (landed: churn
+-18 GB/12 steps, free lists 2.47 GB -> 44 MB); the bam scalar-where fix
+(upstream, ~1.25 GB churn); `torch.xpu.empty_cache()` between phases
+(472 MB); shrinking nconmax-driven workspaces needs the njmax-style
+overflow audit per task (silent contact drops -> NaN).
