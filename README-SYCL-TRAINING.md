@@ -124,7 +124,7 @@ whole setup is one command (the script below is exactly the manual recipe
 that follows, with the pip-config-env-var trap already handled):
 
     cd <path-to-mjlab-sycl>
-    .\scripts\setup_microduck.ps1 -Repo <path-to-microduck_rl>     # + -InstallTorchXpu on a new machine
+    .\scripts\setup_project.ps1 -Repo <path-to-microduck_rl>     # + -InstallTorchXpu on a new machine
 
 Manual equivalent:
 

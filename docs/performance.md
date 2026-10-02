@@ -12,8 +12,8 @@ Task: `Mjlab-Velocity-Flat-MicroDuck` (14 servos, nv=20), 50 Hz control.
 
 ```powershell
 # end-to-end training loop timing (rollout | ppo | total per iteration)
-.venv\Scripts\mjlab-sycl-bench.exe --device sycl  --num-envs 4096 --iters 3
-.venv\Scripts\mjlab-sycl-bench.exe --device cpu   --num-envs 1024 --iters 2   # pure warp-cpu, no sycl patch
+.venv\Scripts\mjlab-sycl-bench.exe --device sycl  --task Mjlab-Velocity-Flat-MicroDuck --num-envs 4096 --iters 3
+.venv\Scripts\mjlab-sycl-bench.exe --device cpu   --task Mjlab-Velocity-Flat-MicroDuck --num-envs 1024 --iters 2   # pure warp-cpu, no sycl patch
 # per-step API census (launches / drains / allocs per env step)
 python scripts\probe_sycl_profile.py --num-envs 4096 --steps 20
 # drain call-site attribution (which wrapper drains how often per step)

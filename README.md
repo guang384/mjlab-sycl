@@ -36,7 +36,7 @@ What it bundles:
 <project>\.venv\Scripts\python.exe -m pip install --isolated --no-deps -e <path-to-mjlab-sycl>
 
 # 2. overlay the warp SYCL backend (add --warmup <TASK> to pre-compile kernels)
-<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup Mjlab-Velocity-Flat-MicroDuck
+<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup <TASK>
 
 # 3. environment preflight (read-only, 8 checks, each with its fix)
 <project>\.venv\Scripts\mjlab-sycl-check.exe
@@ -46,22 +46,26 @@ What it bundles:
 <project>\.venv\Scripts\python.exe -m pip install "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu
 ```
 
-Then train any registered task (task names come from your mjlab
-project's registry — `mjlab-sycl-train --list-tasks` lists them):
+Then train any registered task. `<TASK>` is a plain name from YOUR
+mjlab project's registry (the project's task package registers it via
+`register_mjlab_task`); list them with `mjlab-sycl-train --list-tasks`:
 
 ```powershell
 # smoke test first (64 envs, 5 iterations)
-<project>\.venv\Scripts\mjlab-sycl-train.exe Mjlab-Velocity-Flat-MicroDuck --num-envs 64 --max-iterations 5
+<project>\.venv\Scripts\mjlab-sycl-train.exe <TASK> --num-envs 64 --max-iterations 5
 
 # full training (4096 envs)
-<project>\.venv\Scripts\mjlab-sycl-train.exe Mjlab-Velocity-Flat-MicroDuck --num-envs 4096 --max-iterations 1000
+<project>\.venv\Scripts\mjlab-sycl-train.exe <TASK> --num-envs 4096 --max-iterations 1000
+
+# e.g. with microduck_rl's walking task:
+#   mjlab-sycl-train.exe Mjlab-Velocity-Flat-MicroDuck --num-envs 4096 --max-iterations 1000
 ```
 
-One-command setup into a fresh project: `scripts/setup_microduck.ps1 -Repo <project>`.
+One-command setup into a fresh project: `scripts/setup_project.ps1 -Repo <project>`.
 
 **First run (one-time):** kernel modules are JIT-compiled on first use
 (measured 3.5 min on this box, cached afterwards) — the entries say so up
-front, and step 2's `--warmup` moves that cost into the install. Full path
+front, and step 2's `--warmup <TASK>` moves that cost into the install. Full path
 from a fresh clone to the first training step: ≈10 minutes, mostly `uv sync`
 plus the one-time JIT. The command family is
 `mjlab-sycl-{install,check,train,bench,test}`.

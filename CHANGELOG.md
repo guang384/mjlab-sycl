@@ -23,7 +23,7 @@ All notable changes to mjlab-sycl.
   to CPU and iterations run ~3x slower with no error): train/bench
   print a loud warning with the exact +xpu-wheel command on the
   fallback path, `mjlab-sycl-check` names the trap in its fix line,
-  setup_microduck.ps1 detects cpu-only torch when skipping the install,
+  setup_project.ps1 detects cpu-only torch when skipping the install,
   and both READMEs state the requirement explicitly (torch 2.9.1+xpu
   from the PyTorch XPU index, per-machine).
 - **No more multi-GB toolkit at runtime**: the oneAPI dependency is
@@ -35,7 +35,7 @@ All notable changes to mjlab-sycl.
   enumerates the GPU with only the wheels on PATH (the 2025.2 wheels
   torch-xpu pins fail with WinError 127, exactly as documented).
   `mjlab-sycl-check` now checks SYCL-runtime >= 2025.3 from EITHER
-  source and reports the loaded version; setup_microduck.ps1 installs
+  source and reports the loaded version; setup_project.ps1 installs
   the wheels automatically when no toolkit is present; both READMEs
   document the lightweight requirement.
 - **First-run UX**: the one-time kernel JIT (~3.5 min, 108 modules)
@@ -189,6 +189,14 @@ All notable changes to mjlab-sycl.
   −35.0 ± 3.9 ms/step (−12.7%).
 
 ### Changed
+- **De-microduck the general surface**: task names are now clearly
+  '<TASK> from YOUR project's registry' in every doc example (microduck
+  demoted to a worked example), `mjlab-sycl-bench` no longer defaults to
+  a microduck task (required + did-you-mean like train), both entries
+  share one taskcheck helper with `--list-tasks`, and
+  `setup_microduck.ps1` becomes `setup_project.ps1` (works for any
+  mjlab project; hints generic). kview/cpu_replay stay duck-specific
+  by design and say so.
 - Doc restructure into one source per fact: README.md is the landing
   page (quickstart commands + one headline), README-SYCL-TRAINING.md the
   full manual (requirements/env vars/gates/footguns/limitations),

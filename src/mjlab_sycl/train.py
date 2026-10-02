@@ -47,24 +47,17 @@ def main() -> None:
                       help="list the task names registered in this venv and exit")
   args = parser.parse_args()
 
-  # fail fast on task-name problems BEFORE the device setup -- task names
-  # come from the venv's mjlab task registry (e.g. microduck_rl's
-  # src/mjlab_microduck/tasks/__init__.py register_mjlab_task calls)
-  import difflib
+  # fail fast on task-name problems BEFORE the device setup
+  from mjlab_sycl.taskcheck import (
+    print_task_list,
+    registered_tasks,
+    resolve_task_or_exit,
+  )
 
-  from mjlab.tasks import registry as _registry
-
-  task_names = sorted(_registry.list_tasks())
   if args.list_tasks:
-    print(f"{len(task_names)} registered tasks in this venv:")
-    for name in task_names:
-      print(f"  {name}")
+    print_task_list(registered_tasks())
     return
-  if not args.task:
-    print("[train-sycl] missing task name; registered in this venv:", flush=True)
-    for name in task_names:
-      print(f"  {name}")
-    raise SystemExit(1)
+  args.task = resolve_task_or_exit(args.task, "mjlab-sycl-train")
   if args.task not in task_names:
     print(f"[train-sycl] unknown task: {args.task!r}", flush=True)
     close = difflib.get_close_matches(args.task, task_names, n=5, cutoff=0.35)

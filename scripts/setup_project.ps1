@@ -20,9 +20,9 @@
   `uv sync`, re-run this script afterwards).
 
 .EXAMPLE
-  .\scripts\setup_microduck.ps1 -Repo C:\path\to\microduck_rl
-  .\scripts\setup_microduck.ps1 -Repo C:\path\to\microduck_rl -InstallTorchXpu
-  .\scripts\setup_microduck.ps1 -Repo . -PipIndex https://mirrors.aliyun.com/pypi/simple/
+  .\scripts\setup_project.ps1 -Repo C:\path\to\microduck_rl
+  .\scripts\setup_project.ps1 -Repo C:\path\to\microduck_rl -InstallTorchXpu
+  .\scripts\setup_project.ps1 -Repo . -PipIndex https://mirrors.aliyun.com/pypi/simple/
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
@@ -50,7 +50,7 @@ Remove-Item Env:PIP_CONFIG_FILE, Env:PIP_TARGET -ErrorAction SilentlyContinue
 $RepoPath = (Resolve-Path -LiteralPath $Repo).Path
 $ProjectPy = Join-Path $RepoPath "pyproject.toml"
 if (-not (Test-Path -LiteralPath $ProjectPy)) {
-  Step-Fail "$RepoPath is not a python project (no pyproject.toml). Point -Repo at your mjlab project, e.g. a microduck_rl clone."
+  Step-Fail "$RepoPath is not a python project (no pyproject.toml). Point -Repo at your mjlab project directory (the one with pyproject.toml)."
   exit 1
 }
 
@@ -130,7 +130,7 @@ if ($code -eq 0) {
   Step-Ok "Environment ready. Task ids come from the project's registry (e.g. uv run list-envs inside the project)."
   $trainExe = Join-Path (Split-Path -Parent $Py) "mjlab-sycl-train.exe"
   Write-Host ""
-  Write-Host "    & '$trainExe' Mjlab-Velocity-Flat-MicroDuck --num-envs 64 --max-iterations 5" -ForegroundColor Yellow
+  Write-Host "    & '$trainExe' <TASK> --num-envs 64 --max-iterations 5   # <TASK> = & '$trainExe' --list-tasks" -ForegroundColor Yellow
   Write-Host ""
   Write-Host "NOTE: any 'uv sync' / 'uv run' wipes the overlay and this install - re-run this script afterwards." -ForegroundColor DarkYellow
 } else {

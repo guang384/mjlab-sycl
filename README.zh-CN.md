@@ -31,8 +31,8 @@ mjlab 技术栈原样搬到 Intel iGPU/Arc 上训练，**不改你项目的任�
 #    或者像下面这样加 --isolated）
 <project>\.venv\Scripts\python.exe -m pip install --isolated --no-deps -e <path-to-mjlab-sycl>
 
-# 2. 铺设 warp SYCL 后端（加 --warmup <任务名> 可顺带预编译内核）
-<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup Mjlab-Velocity-Flat-MicroDuck
+# 2. 铺设 warp SYCL 后端（加 --warmup <TASK> 可顺带预编译内核）
+<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup <TASK>
 
 # 3. 环境预检（只读，8 项检查，每项带修复指引）
 <project>\.venv\Scripts\mjlab-sycl-check.exe
@@ -47,24 +47,27 @@ mjlab 技术栈原样搬到 Intel iGPU/Arc 上训练，**不改你项目的任�
 
 ```powershell
 <project>\.venv\Scripts\python.exe -m pip install --isolated --no-deps "git+https://github.com/guang384/mjlab-sycl@v0.3.0"
-<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup <任务名>
+<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup <TASK>
 <project>\.venv\Scripts\mjlab-sycl-check.exe
 ```
 
 （`v0.3.0` 换成目标版本号即可；发布页的 `.whl` 安装方式相同。本包不在 PyPI 发布。）
 
-然后训练任意已注册任务（任务名来自你的 mjlab 项目注册表，
-`mjlab-sycl-train --list-tasks` 可列出全部）：
+然后训练任意已注册任务。`<TASK>` 是**你的** mjlab 项目注册表里的任务名（任务包通过
+`register_mjlab_task` 注册），用 `mjlab-sycl-train --list-tasks` 查看全部：
 
 ```powershell
 # 先冒烟（64 环境、5 个迭代）
-<project>\.venv\Scripts\mjlab-sycl-train.exe Mjlab-Velocity-Flat-MicroDuck --num-envs 64 --max-iterations 5
+<project>\.venv\Scripts\mjlab-sycl-train.exe <TASK> --num-envs 64 --max-iterations 5
 
 # 正式训练（4096 环境）
-<project>\.venv\Scripts\mjlab-sycl-train.exe Mjlab-Velocity-Flat-MicroDuck --num-envs 4096 --max-iterations 1000
+<project>\.venv\Scripts\mjlab-sycl-train.exe <TASK> --num-envs 4096 --max-iterations 1000
+
+# 例如 microduck_rl 的行走任务：
+#   mjlab-sycl-train.exe Mjlab-Velocity-Flat-MicroDuck --num-envs 4096 --max-iterations 1000
 ```
 
-新项目一键安装：`scripts/setup_microduck.ps1 -Repo <项目路径>`。
+新项目一键安装：`scripts/setup_project.ps1 -Repo <项目路径>`。
 
 **首次运行（一次性）**：内核模块首次使用时 JIT 编译（本机实测约 3.5 分钟，之后走
 缓存）——入口会提前打印提示；第 2 步的 `--warmup` 把这个成本挪到安装期。从全新

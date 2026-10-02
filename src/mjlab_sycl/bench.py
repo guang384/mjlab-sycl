@@ -40,8 +40,11 @@ def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--device", choices=["cpu", "sycl"], default="sycl")
   parser.add_argument(
-    "--task", default="Mjlab-Velocity-Flat-MicroDuck"
+    "--task", default=None,
+    help="task name from the venv's mjlab registry (see --list-tasks)",
   )
+  parser.add_argument("--list-tasks", action="store_true",
+                      help="list the task names registered in this venv and exit")
   parser.add_argument("--num-envs", type=int, default=4096)
   # physics is bus-bound: a background GPU app poisons the measurement
   # (docs/performance.md re-attribution) -- warn before numbers are taken
@@ -52,6 +55,17 @@ def main() -> None:
   parser.add_argument("--skip-warmup", type=int, default=1,
                       help="iterations to exclude from the mean (compile/warmup)")
   args = parser.parse_args()
+
+  from mjlab_sycl.taskcheck import (
+    print_task_list,
+    registered_tasks,
+    resolve_task_or_exit,
+  )
+
+  if args.list_tasks:
+    print_task_list(registered_tasks())
+    return
+  args.task = resolve_task_or_exit(args.task, "mjlab-sycl-bench")
 
   wp.init()
   from mjlab_sycl._bootstrap import cold_cache_notice
