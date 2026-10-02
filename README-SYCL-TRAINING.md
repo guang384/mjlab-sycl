@@ -179,6 +179,12 @@ after `wp.init()`.
 
 ## Verification gates
 
+The chain (`mjlab-sycl-test`, 6 verdicts in order): overlay sync
+(host-only), backend e2e (bit-exact vs cpu), mujoco_warp physics vs cpu
+(~1e-5), the launch-cache semantics tests, the fused-kernel chain tests
+(every fusion vs its original on identical inputs), and the
+patched-stack physics + launch-contract gate (test_patched).
+
 > Environment preflight first: `mjlab-sycl-check` (read-only). These gates are
 > the full numerical verification on top of a healthy environment.
 

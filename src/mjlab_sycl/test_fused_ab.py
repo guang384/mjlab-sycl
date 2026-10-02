@@ -8,11 +8,12 @@ The only legitimate difference is float accumulation order (the originals
 use wp.atomic_add over siblings, which is order-nondeterministic), so the
 tolerance is 1e-4 absolute on O(1)-magnitude buffers.
 
-The end-to-end check runs ONE env.step fused vs unfused and compares qacc
-mean absolute difference against the same-config control's own run-to-run
-nondeterminism (the unmodified pipeline is itself nondeterministic because
-of solver atomics + chaotic contact dynamics; multi-step comparisons are
-meaningless — 1e-7 seed noise amplifies to O(10) qacc error by step 8).
+End-to-end fusion equivalence lives in the patched-stack physics gate
+(test_patched: fused pipeline vs cpu reference at ~2e-08). An earlier
+cross-build one-step qacc comparison was removed here: it compared
+separately constructed envs, where construction nondeterminism + chaotic
+contact make the fused-vs-unfused delta indistinguishable from build
+noise (multi-step comparisons are meaningless — 1e-7 seed noise amplifies to O(10) qacc error by step 8).
 """
 
 import os
@@ -151,52 +152,8 @@ def chain_tests():
   compare("subtree_vel.subtree_angmom", am_f, am_o)
 
 
-def one_step_qacc(tag) -> np.ndarray:
-  env = make_env()
-  env.reset()
-  action = torch.zeros(
-    (256, env.action_manager.total_action_dim), dtype=torch.float32, device="cpu"
-  )
-  action[:, 0] = 0.1
-  action[:, 5] = -0.2
-  env.step(action)
-  sync()
-  qacc = env.sim._wp_data.qacc.numpy().copy()
-  assert not np.isnan(qacc).any(), f"{tag}: NaN qacc"
-  return qacc
-
-
-def solver_e2e():
-  os.environ["MJLAB_SYCL_FUSED_SOLVER"] = "1"
-  os.environ["MJLAB_SYCL_FUSED_TREE"] = "1"
-  q_on = one_step_qacc("fused")
-
-  os.environ["MJLAB_SYCL_FUSED_SOLVER"] = "0"
-  os.environ["MJLAB_SYCL_FUSED_TREE"] = "0"
-  q_off = one_step_qacc("unfused")
-
-  # control: same config twice — the pipeline's own nondeterminism
-  q_ctl1 = one_step_qacc("ctl1")
-  q_ctl2 = one_step_qacc("ctl2")
-
-  mean_on = np.abs(q_on - q_off).mean()
-  max_on = np.abs(q_on - q_off).max()
-  mean_ctl = np.abs(q_ctl1 - q_ctl2).mean()
-  max_ctl = np.abs(q_ctl1 - q_ctl2).max()
-  print(
-    f"[e2e] fused-vs-unfused 1-step qacc: mean={mean_on:.3e} max={max_on:.3e}"
-  )
-  print(f"[e2e] control (same config x2):   mean={mean_ctl:.3e} max={max_ctl:.3e}")
-  # the fusion must not add error beyond the pipeline's own noise floor
-  assert mean_on < max(3.0 * mean_ctl, 1e-3), (
-    f"fused qacc mean diff {mean_on:.3e} >> control noise {mean_ctl:.3e}"
-  )
-
-
 def main() -> None:
   chain_tests()
-  print()
-  solver_e2e()
   print("\nALL FUSION TESTS PASSED")
 
 

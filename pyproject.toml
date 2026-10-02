@@ -6,6 +6,17 @@ build-backend = "uv_build"
 name = "mjlab-sycl"
 version = "0.2.0"
 description = "Intel GPU (SYCL) training support for mjlab: warp-sycl runtime patch + barrier-free flat kernels + a select_gpus-free train entry + verification gates"
+authors = [{ name = "guang384" }]
+keywords = ["mjlab", "mujoco", "warp", "sycl", "intel-gpu", "reinforcement-learning", "robotics"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Physics",
+]
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
@@ -34,3 +45,9 @@ mjlab-sycl-install = "mjlab_sycl.install:main"
 
 [tool.pytest.ini_options]
 testpaths = ["src/mjlab_sycl/test_overlay.py"]
+
+[project.urls]
+Homepage = "https://github.com/guang384/mjlab-sycl"
+Repository = "https://github.com/guang384/mjlab-sycl"
+Issues = "https://github.com/guang384/mjlab-sycl/issues"
+Changelog = "https://github.com/guang384/mjlab-sycl/blob/master/CHANGELOG.md"

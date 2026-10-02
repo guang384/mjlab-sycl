@@ -25,7 +25,9 @@ for dll in ("libmmd.dll", "ur_win_proxy_loader.dll", "sycl8.dll", "ur_loader.dll
         except OSError as e:
             print(f"preload {dll}: {e}")
 
-dll = ctypes.WinDLL(r"D:\mjlab-sycl\src\mjlab_sycl\backend\warpsycl.dll")
+here = os.path.dirname(os.path.abspath(__file__))
+repo = os.path.dirname(os.path.dirname(here))  # scripts/bench -> repo root
+dll = ctypes.WinDLL(os.path.join(repo, "src", "mjlab_sycl", "backend", "warpsycl.dll"))
 dll.wp_sycl_device_name.restype = ctypes.c_char_p
 name = dll.wp_sycl_device_name().decode()
 print(f"RUNTIME OK: {name}")

@@ -8,6 +8,10 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- `mjlab-sycl-test` now runs 6 verdicts: the two orphaned GPU test
+  modules (launch-cache semantics, fused-kernel chain tests) join the
+  gate chain via lazy imports (test_fused_ab installs the patch at
+  import, so it must follow the raw-backend gates).
 - `mjlab-sycl-train --list-tasks`: list the task names registered in
   the venv; unknown or missing task names now fail fast with
   did-you-mean suggestions and the listing hint (was a raw KeyError
@@ -322,6 +326,13 @@ All notable changes to mjlab-sycl.
   env-steps/s, consistent with the thermal attribution).
 
 ### Fixed
+- **Workspace pool device-key bug** (found by the expanded gate chain):
+  pooled collision scratch keyed only on (shape, dtype) -- with
+  `device=None` resolving to the ambient default, a cpu-scoped run's
+  buffer could be served to a sycl launch. Keys now use the RESOLVED
+  device. Also removes a flawed cross-build e2e comparison from
+  test_fused_ab (construction nondeterminism dominated its signal;
+  fusion equivalence is covered by the chain tests + the patched gate).
 - `install` no longer crashes with WinError 32 when a live process holds
   the kernel-cache `warpsycl.dll`: an already byte-identical DLL is
   skipped, and a genuinely different one reports the close-the-holder

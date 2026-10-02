@@ -396,11 +396,19 @@ def _install_workspace_pool() -> None:
       checked = []
 
       def serve_empty(shape, dtype=float, device=None, **k):
-        key = (tuple(shape) if isinstance(shape, (tuple, list)) else (shape,),
-               str(dtype))
+        # the key MUST include the RESOLVED device: a buffer pooled by a
+        # cpu-scoped run served to a sycl launch dies (found by the gate
+        # chain running cpu + sycl back to back). device=None means the
+        # ambient default, so resolve through warp before keying.
+        dev = wp.get_device(device)
+        key = (
+            tuple(shape) if isinstance(shape, (tuple, list)) else (shape,),
+            str(dtype),
+            str(dev),
+        )
         bucket = _WS_POOL.get(key)
         arr = bucket.pop() if bucket else _orig_empty(
-            shape, dtype=dtype, device=device, **k)
+            shape, dtype=dtype, device=dev, **k)
         checked.append((key, arr))
         return arr
 
