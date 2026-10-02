@@ -12,3 +12,4 @@ logs/
 # rebuild byproducts of warpsycl.dll (/LD emits import lib + export file)
 src/mjlab_sycl/backend/warpsycl.lib
 src/mjlab_sycl/backend/warpsycl.exp
+scripts/bench/stream_matrix.exe
