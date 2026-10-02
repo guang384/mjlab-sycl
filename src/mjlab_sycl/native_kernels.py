@@ -18,6 +18,7 @@ import os
 
 _fn_mv_jv = None
 _fn_jtdaj = None
+_fn_chol = None
 _probed = False
 
 
@@ -29,7 +30,7 @@ def _enabled(name: str) -> bool:
 
 def _api():
     """Resolve the DLL exports once; None means unavailable (stale DLL)."""
-    global _fn_mv_jv, _fn_jtdaj, _probed
+    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _probed
     if _probed:
         return _fn_mv_jv
     _probed = True
@@ -48,6 +49,13 @@ def _api():
             _fn_jtdaj = fj
         except AttributeError:
             _fn_jtdaj = None
+        try:
+            fc = dll.wp_sycl_chol_solve
+            fc.restype = ctypes.c_int
+            fc.argtypes = [ctypes.c_void_p] * 8 + [ctypes.c_longlong] * 3
+            _fn_chol = fc
+        except AttributeError:
+            _fn_chol = None
     except Exception:
         _fn_mv_jv = None
     return _fn_mv_jv
@@ -76,3 +84,18 @@ def jtdaj(qM, J, D, state, nefc, done, h, nv_pad: int, njmax_pad: int) -> bool:
         return False
     return fn(qM.ptr, J.ptr, D.ptr, state.ptr, nefc.ptr, done.ptr, h.ptr,
               nv_pad, njmax_pad, qM.shape[0]) == 0
+
+
+def chol_solve(h, grad, done, changed, lvalid_in, L, lvalid_out, Mgrad,
+               n: int, nv_pad: int) -> bool:
+    """Native solver cholesky factor+solve (one item per world, per-size
+    template). Returns True when the batch ran; False for exotic n or a
+    disabled/unavailable route (caller stays on the warp kernel)."""
+    if not _enabled("MJLAB_SYCL_NATIVE_CHOL"):
+        return False
+    _api()
+    fn = _fn_chol
+    if fn is None:
+        return False
+    return fn(h.ptr, grad.ptr, done.ptr, changed.ptr, lvalid_in.ptr, L.ptr,
+              lvalid_out.ptr, Mgrad.ptr, n, nv_pad, h.shape[0]) == 0

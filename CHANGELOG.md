@@ -8,6 +8,15 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Native solver-cholesky kernel** (`wp_sycl_chol_solve`,
+  `MJLAB_SYCL_NATIVE_CHOL=0` to disable): LLT + forward/back substitution
+  per world with per-size template instantiation (4..32) keeping the
+  N-loops fully unrolled, done-guarded, changed/lvalid skip preserved.
+  NOT bit-identical to the warp kernel (sycl::sqrt/division rounding,
+  ULP-level) -- gated by the 1e-5 contract: all gates pass, physics vs
+  cpu 3.308e-06 unchanged. Swapped-order paired A/B at 4096 envs:
+  18,420/18,201 -> 18,869/18,991 env-steps/s (+2.4-4.3 %). Third harvest
+  of the DPC++-vs-warp codegen gap.
 - **Native JTDAJ kernel** (`wp_sycl_jtdaj`, `MJLAB_SYCL_NATIVE_JTDAJ=0` to
   disable): the Hessian update h = qM + J^T D' J re-implemented as a native
   SYCL kernel -- 32-lane row-block schedule, bit-exact per-element

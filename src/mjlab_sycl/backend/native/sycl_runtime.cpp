@@ -187,6 +187,54 @@ void* graph_arena_alloc(GraphState* g, size_t size) {
 
 }  // namespace
 
+namespace {
+
+template <int N>
+static void chol_solve_submit(sycl::queue& q, const float* h,
+                              const float* grad, const unsigned char* done,
+                              const int* changed,
+                              const unsigned char* lvalid_in, float* L,
+                              unsigned char* lvalid_out, float* Mgrad,
+                              long long stride, long long batch) {
+    q.parallel_for(sycl::range<1>(static_cast<size_t>(batch)),
+                   [=](sycl::id<1> idx) {
+        const int w = static_cast<int>(idx.get(0));
+        if (done[w]) return;
+        float* Lw = L + static_cast<size_t>(w) * stride * stride;
+        const float* hw = h + static_cast<size_t>(w) * stride * stride;
+        const float* gw = grad + static_cast<size_t>(w) * stride;
+        float* mw = Mgrad + static_cast<size_t>(w) * stride;
+        if (changed[w] != 0 || !lvalid_in[w]) {
+            for (int i = 0; i < N; ++i) {
+                for (int j = 0; j <= i; ++j) {
+                    float s = hw[i * stride + j];
+                    for (int k = 0; k < j; ++k)
+                        s -= Lw[i * stride + k] * Lw[j * stride + k];
+                    if (i == j) Lw[i * stride + i] = sycl::sqrt(s);
+                    else Lw[i * stride + j] = s / Lw[j * stride + j];
+                }
+            }
+            lvalid_out[w] = 1;
+        }
+        for (int i = 0; i < N; ++i) {
+            float s = gw[i];
+            for (int k = 0; k < i; ++k) s -= Lw[i * stride + k] * mw[k];
+            mw[i] = s / Lw[i * stride + i];
+        }
+        for (int i = 0; i < N; ++i) {
+            const int ii = N - 1 - i;
+            float s = mw[ii];
+            for (int k = 0; k < N - 1 - ii; ++k) {
+                const int kk = N - 1 - k;
+                s -= Lw[kk * stride + ii] * mw[kk];
+            }
+            mw[ii] = s / Lw[ii * stride + ii];
+        }
+    });
+}
+
+}  // namespace
+
 extern "C" {
 
 void* wp_sycl_queue_ptr() { return &the_queue(); }
@@ -579,6 +627,43 @@ int wp_sycl_jtdaj(const void* qM, const void* J, const void* D,
         return 0;
     } catch (std::exception const& e) {
         std::fprintf(stderr, "wp_sycl_jtdaj failed: %s\n", e.what());
+        return -1;
+    }
+}
+
+// ---- solver cholesky factor+solve (bit-exact native rewrite) ---------------
+//
+// One work-item per world, exactly the warp flat kernel's structure: LLT of
+// h into L (skipped per world when `changed` == 0 and L is still valid --
+// the incremental path's skip contract), then forward/back substitution
+// grad -> Mgrad. Buffers are nv_pad-strided; loops run over the real n.
+// Instantiated per size so the N-loops fully unroll (the warp kernel's
+// max_unroll is load-bearing -- measured 94x slower unrolled-off); exotic
+// sizes report -5 and the caller stays on the warp kernel.
+
+
+WP_SYCL_API int wp_sycl_chol_solve(const void* h, const void* grad,
+                       const unsigned char* done, const int* changed,
+                       const unsigned char* lvalid_in, void* L,
+                       unsigned char* lvalid_out, void* Mgrad,
+                       long long n, long long stride, long long batch) {
+    if (batch <= 0 || n <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_chol_solve");
+        switch (n) {
+        case 4:  chol_solve_submit<4>(q, static_cast<const float*>(h), static_cast<const float*>(grad), done, changed, lvalid_in, static_cast<float*>(L), lvalid_out, static_cast<float*>(Mgrad), stride, batch); return 0;
+        case 8:  chol_solve_submit<8>(q, static_cast<const float*>(h), static_cast<const float*>(grad), done, changed, lvalid_in, static_cast<float*>(L), lvalid_out, static_cast<float*>(Mgrad), stride, batch); return 0;
+        case 12: chol_solve_submit<12>(q, static_cast<const float*>(h), static_cast<const float*>(grad), done, changed, lvalid_in, static_cast<float*>(L), lvalid_out, static_cast<float*>(Mgrad), stride, batch); return 0;
+        case 16: chol_solve_submit<16>(q, static_cast<const float*>(h), static_cast<const float*>(grad), done, changed, lvalid_in, static_cast<float*>(L), lvalid_out, static_cast<float*>(Mgrad), stride, batch); return 0;
+        case 20: chol_solve_submit<20>(q, static_cast<const float*>(h), static_cast<const float*>(grad), done, changed, lvalid_in, static_cast<float*>(L), lvalid_out, static_cast<float*>(Mgrad), stride, batch); return 0;
+        case 24: chol_solve_submit<24>(q, static_cast<const float*>(h), static_cast<const float*>(grad), done, changed, lvalid_in, static_cast<float*>(L), lvalid_out, static_cast<float*>(Mgrad), stride, batch); return 0;
+        case 28: chol_solve_submit<28>(q, static_cast<const float*>(h), static_cast<const float*>(grad), done, changed, lvalid_in, static_cast<float*>(L), lvalid_out, static_cast<float*>(Mgrad), stride, batch); return 0;
+        case 32: chol_solve_submit<32>(q, static_cast<const float*>(h), static_cast<const float*>(grad), done, changed, lvalid_in, static_cast<float*>(L), lvalid_out, static_cast<float*>(Mgrad), stride, batch); return 0;
+        default: return -5;
+        }
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_chol_solve failed: %s\n", e.what());
         return -1;
     }
 }

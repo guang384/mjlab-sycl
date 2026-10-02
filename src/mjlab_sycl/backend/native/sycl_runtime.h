@@ -84,6 +84,16 @@ WP_SYCL_API int wp_sycl_jtdaj(const void* qM, const void* J, const void* D,
                               const unsigned char* done, void* h,
                               long long nv_pad, long long njmax_pad,
                               long long batch);
+// Solver cholesky factor+solve, one work-item per world (see the .cpp):
+// bit-exact native rewrite of the warp flat kernel with per-size template
+// instantiation. Sizes outside {4,8,...,32} return -5 (caller falls back).
+WP_SYCL_API int wp_sycl_chol_solve(const void* h, const void* grad,
+                                   const unsigned char* done,
+                                   const int* changed,
+                                   const unsigned char* lvalid_in, void* L,
+                                   unsigned char* lvalid_out, void* Mgrad,
+                                   long long n, long long stride,
+                                   long long batch);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

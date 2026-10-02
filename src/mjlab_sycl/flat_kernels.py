@@ -164,6 +164,13 @@ def install() -> None:
         "off",
       )
       changed = ctx.changed_efc_count if (skip_unchanged and skip_ok) else ones
+      from mjlab_sycl import native_kernels
+
+      if native_kernels.chol_solve(
+          ctx.h, ctx.grad, ctx.done, changed, lvalid, scratch, lvalid,
+          ctx.Mgrad, m.nv, m.nv_pad,
+      ):
+        return
       wp.launch(
         _get_chol_solve_kernel(m.nv),
         dim=d.nworld,
@@ -240,6 +247,13 @@ def install() -> None:
       # skip_unchanged routing, so force the factorize via the ones array.
       n = _SOLVER_CHOL_NV.get(id(kernel), inputs[0].shape[1])
       scratch, lvalid, ones = _chol_state(h)
+      from mjlab_sycl import native_kernels
+
+      if native_kernels.chol_solve(
+          h, inputs[0], inputs[2], ones, lvalid, scratch, lvalid,
+          outputs[0], n, h.shape[1],
+      ):
+        return  # the native kernel ran; suppress the warp launch
       return wp.launch(
         _get_chol_solve_kernel(n),
         dim=nworld_from(kwargs),
