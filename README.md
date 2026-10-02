@@ -60,9 +60,10 @@ verification gates, environment variables and the hard-won footguns.
 ## Measured performance
 
 Intel Arc 130T (Lunar Lake iGPU), microduck velocity task, 4096 envs:
-**~15k env-steps/s (~7.0–7.6 s/iteration; 14.6–15.9k across sessions —
-treat GPU thermal/session state as a ±20 % error bar)** end-to-end, vs
-~258 on the same stack's warp-cpu device (0.2.0 archive: 5,485). Full
+**~22k env-steps/s (~5.5 s/iteration) on a quiet desktop** end-to-end
+(quiet matters: a background GPU app costs 10–45 % — the bench and train
+entries now warn on startup), vs ~258 on the same stack's warp-cpu
+device (0.2.0 archive: 5,485). Full
 measured archive (per-step budget, kernel ranking, every optimization attempt
 and its verdict, hardware comparisons): [`docs/performance.md`](docs/performance.md);
 argued kernel-level candidates and the measured bounds that closed them:

@@ -31,6 +31,7 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
 | sycl, PPO on **xpu** (default), selective-recompute refresh (2026-09-30) | mean 7.1 s (rollout 6.2 / ppo 0.9) | **15,762** |
 | sycl, PPO on **xpu** (default), 2026-10-01 re-check (3 runs, cold start) | mean 8.6 s (rollout 7.4 / ppo 1.2) | 13,276 |
 | sycl, PPO on **xpu** (default), 2026-10-02 re-check (warm device, 3 iters) | mean 7.0 s (rollout 6.2 / ppo 0.8) | 15,918 |
+| sycl, PPO on **xpu** (default), 2026-10-02 quiet-desktop + full native suite (8 kernels) | ~5.5 s/iter | **21,500 – 22,100** (contended baseline for comparison: 16.9k) |
 | sycl, PPO on **xpu** (default), graph-batch refresh (2026-09-30) | mean 8.3 s (rollout 7.3 / ppo 1.0) | 13,390 |
 | sycl, PPO on **xpu** (default), flat-kernel v2 refresh (2026-09-30, 2 runs) | mean 9.1 – 9.4 s | 11,835 – 11,940 |
 | sycl, PPO on **xpu** (default), post-fusion (2026-09-30, 3 runs) | mean 10.2 – 17.1 s (run-to-run clock variance) | 6,301 – 10,782 |

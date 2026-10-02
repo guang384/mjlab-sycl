@@ -294,10 +294,14 @@ Every kernel-schedule candidate has now been measured except T4:
   the jv family's ~43 GB/s effective is NOT the hardware wall -- ~2x
   pattern headroom exists. It is trapped: lane-coalesced J reads need
   cross-lane reductions (breaks bit-exactness) or the measured wash of
-  the row-block schedule. The one unexplored lever is L2 residency
-  (real-rows J ~15 MB vs ~16 MB Xe2 L2, re-read ~8x per solve), via
-  Level Zero cache-policy extensions if ever; the precision lever
-  (fp16/bf16 J) halves the bytes but violates the accuracy contract.
+  the row-block schedule. L2 residency: MEASURED DEAD
+  (2026-10-02, scripts/bench/l2_reread.cpp): whole-buffer re-read
+  bandwidth is 170-303 GB/s across S = 4-64 MB with volatile-forced
+  reloads -- 2-4x DRAM stream (~80-88) and beyond the bus theoretical
+  (~136) at larger S, i.e. repeated reads already hit cache/memory-level
+  parallelism. Pinning J for the solver's re-reads has no DRAM traffic
+  left to save. The precision lever (fp16/bf16 J) halves the bytes but
+  violates the accuracy contract.
 
 Every step gates through `mjlab-sycl-test` plus a paired bench A/B
 (`performance.md` reproduce block), and lands default-off behind its own
