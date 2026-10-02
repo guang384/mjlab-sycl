@@ -1,5 +1,7 @@
 # mjlab-sycl
 
+English | [简体中文](README.zh-CN.md)
+
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/guang384/mjlab-sycl)](https://github.com/guang384/mjlab-sycl/releases)
 [![CI](https://github.com/guang384/mjlab-sycl/actions/workflows/ci.yml/badge.svg)](https://github.com/guang384/mjlab-sycl/actions/workflows/ci.yml)
@@ -17,11 +19,11 @@ trains as-is.
 What it bundles:
 
 - a **vendored warp 1.12.0 SYCL backend** (patched files + `warpsycl.dll`,
-  strictly additive — CUDA/CPU paths untouched) applied by `python -m mjlab_sycl install`
+  strictly additive — CUDA/CPU paths untouched) applied by `mjlab-sycl-install`
 - a **runtime patch** routing mjlab/mujoco_warp physics onto the `sycl` device
   (torch stays on CPU/XPU, queue drained at every sim boundary)
-- **barrier-free flat kernels** replacing mujoco_warp's hottest tiled kernels
-  (one-work-item-per-world tiled kernels are extremely slow on an iGPU)
+- **barrier-free flat kernels + native SYCL kernels** replacing mujoco_warp's
+  hottest kernels (the tiled originals are extremely slow on an iGPU)
 - **train/bench/viewer/check entries** that bypass mjlab's CUDA-only GPU
   selection, plus **verification gates** and a one-command environment preflight
 
@@ -29,20 +31,18 @@ What it bundles:
 
 ```powershell
 # 1. install this package into the venv (editable keeps your clone live;
-#    on machines with a global pip `target=` redirect, clear PIP_CONFIG_FILE/
-#    PIP_TARGET first or use --isolated)
+#    clear PIP_CONFIG_FILE/PIP_TARGET first if pip is redirected globally,
+#    or just use --isolated as below)
 <project>\.venv\Scripts\python.exe -m pip install --isolated --no-deps -e <path-to-mjlab-sycl>
 
-# 2. overlay the warp SYCL backend + self-check
-<project>\.venv\Scripts\python.exe -m mjlab_sycl install
+# 2. overlay the warp SYCL backend (add --warmup <TASK> to pre-compile kernels)
+<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup Mjlab-Velocity-Flat-MicroDuck
 
-# 3. environment preflight (read-only): platform, overlay sync, SYCL
-#    runtime, Intel GPU, a real device kernel vs cpu, torch XPU, task registry
+# 3. environment preflight (read-only, 8 checks, each with its fix)
 <project>\.venv\Scripts\mjlab-sycl-check.exe
 
-# torch MUST be the +xpu wheel -- a plain `pip install torch` installs the
-# CPU build and PPO silently runs ~3x slower (no error!). If the check
-# reports "torch XPU" as FAIL:
+# torch must be the +xpu wheel -- a plain `pip install torch` installs the
+# CPU build and PPO silently runs ~3x slower. Only if the check FAILs it:
 <project>\.venv\Scripts\python.exe -m pip install "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu
 ```
 
@@ -58,39 +58,26 @@ Then train any registered task:
 
 One-command setup into a fresh project: `scripts/setup_microduck.ps1 -Repo <project>`.
 
-**First run (one-time):** the first train/bench run JIT-compiles the kernel
-modules — measured 3.5 min on this box, cached afterwards. The entries
-print a notice before it happens. To pay the cost at install time, warm
-YOUR task (task-specific size variants are compiled per task):
+**First run (one-time):** kernel modules are JIT-compiled on first use
+(measured 3.5 min on this box, cached afterwards) — the entries say so up
+front, and step 2's `--warmup` moves that cost into the install. Full path
+from a fresh clone to the first training step: ≈10 minutes, mostly `uv sync`
+plus the one-time JIT. The command family is
+`mjlab-sycl-{install,check,train,bench,test}`.
 
-```powershell
-<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup Mjlab-Velocity-Flat-MicroDuck
-```
-
-A warmed first train starts in seconds instead of minutes. Full path from
-a fresh clone to first training step: `uv sync` → `pip install -e` →
-`mjlab-sycl-install --warmup <task>` → `mjlab-sycl-train` — ≈10 minutes,
-mostly `uv sync` + one-time JIT. The command family is
-`mjlab-sycl-{install,check,train,bench,test}`; `mjlab-sycl-check` verifies
-platform, overlay sync, oneAPI runtime, GPU, torch XPU and the task
-registry with a per-item fix when something is missing.
-
-See **[README-SYCL-TRAINING.md](README-SYCL-TRAINING.md)** for requirements
-(Windows + Python 3.12 + Intel GPU + a ~50 MB SYCL runtime pip install —
-the multi-GB oneAPI toolkit is only needed to rebuild the backend), the full install/usage story,
-verification gates, environment variables and the hard-won footguns.
+Requirements, usage, environment variables, verification gates, footguns
+and known limitations: **[README-SYCL-TRAINING.md](README-SYCL-TRAINING.md)**
+(the single source for those facts).
 
 ## Measured performance
 
 Intel Arc 130T (Lunar Lake iGPU), microduck velocity task, 4096 envs:
-**~22k env-steps/s (~5.5 s/iteration) on a quiet desktop** end-to-end
-(quiet matters: a background GPU app costs 10–45 % — the bench and train
-entries now warn on startup), vs ~258 on the same stack's warp-cpu
-device (0.2.0 archive: 5,485). Full
-measured archive (per-step budget, kernel ranking, every optimization attempt
-and its verdict, hardware comparisons): [`docs/performance.md`](docs/performance.md);
-argued kernel-level candidates and the measured bounds that closed them:
-[`docs/optimization_ideas.md`](docs/optimization_ideas.md).
+**~22k env-steps/s (~5.5 s/iteration) on a quiet desktop** end-to-end, vs
+~258 on the same stack's warp-cpu device. All measurements, their error
+bars and every optimization's verdict live in
+[`docs/performance.md`](docs/performance.md) — the single source for
+numbers. A background GPU app costs 10–45 % of throughput; the train/bench
+entries warn at startup.
 
 ## Viewer tooling
 
@@ -101,29 +88,11 @@ argued kernel-level candidates and the measured bounds that closed them:
 | `python -m mjlab_sycl.cpu_replay` | smooth ~50 Hz approximate playback of a checkpoint on CPU MuJoCo; can watch a running training dir and hot-swap the newest checkpoint |
 | `python -m mjlab_sycl.play` | real-sim checkpoint playback with a viewer |
 
-## Verification gates
-
-`mjlab-sycl-test` runs three gates in order: host-only overlay-sync check,
-backend e2e (bit-exact vs cpu), and mujoco_warp physics vs cpu (~1e-5). GPU
-gates are also available as a self-hosted GitHub Actions workflow
-(`.github/workflows/gpu-gates.yml`).
-
-## Repo layout
-
-```
-src/mjlab_sycl/       the package: backend/, runtime_patch, flat_kernels,
-                      train/bench/viewer/play/kview/cpu_replay, doctor,
-                      verification gates
-scripts/              setup_microduck.ps1, probes, run_guarded.py watchdog
-docs/performance.md   measured performance baseline archive
-warp_backend/         provenance + rebuild docs for the vendored backend
-```
-
 ## Relationship to NVIDIA/warp
 
 `mjlab-sycl` is **not a fork of NVIDIA/warp** and never replaces it. Training
 runs against the ordinary `warp-lang==1.12.0` package, with a strictly
-additive **overlay** applied on top of it by `python -m mjlab_sycl install`:
+additive **overlay** applied on top of it by `mjlab-sycl-install`:
 
 - 7 modified files (5 Python modules under `warp/_src/`, 2 headers under
   `warp/native/`) + 2 new files (`sycl_runtime.{h,cpp}`) + a prebuilt
@@ -148,12 +117,6 @@ top of the `v1.12.0` tag (recipe in `warp_backend/README.md`). Since that
 2026-09-06 snapshot the backend evolves **inside this repo**:
 `src/mjlab_sycl/backend/` is the single live copy, and later changes are
 ordinary commits in this project's history.
-
-## Limitations
-
-- Windows + Intel GPU only (battle-tested on an Arc 130T iGPU); no Linux.
-- This is a *training path*, not full warp parity (no official warp test suite).
-- Version-locked to warp 1.12.0 / mjlab 1.3.0 / mujoco-warp 3.8.1.
 
 ## Feedback
 

@@ -179,6 +179,13 @@ All notable changes to mjlab-sycl.
   −35.0 ± 3.9 ms/step (−12.7%).
 
 ### Changed
+- Doc restructure into one source per fact: README.md is the landing
+  page (quickstart commands + one headline), README-SYCL-TRAINING.md the
+  full manual (requirements/env vars/gates/footguns/limitations),
+  docs/performance.md the only home for numbers -- the duplicated
+  gates/layout/performance sections that let figures drift (15.8k vs
+  22k) are gone. Adds README.zh-CN.md (简体中文 mirror with the
+  common-pitfalls table) and language switchers on all three.
 - Final pre-release audit pass: removed two superseded debug scripts
   (a dead PDH experiment and the non-deterministic cross-process parity
   runner), cleaned an experimental hack out of the qfrc/jaref unit test,

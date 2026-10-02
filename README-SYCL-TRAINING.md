@@ -1,5 +1,11 @@
 # mjlab-sycl — Intel GPU (SYCL) training for mjlab
 
+English | [简体中文](README.zh-CN.md)
+
+> The full manual. Quickstart commands live in [README.md](README.md);
+> this file is the single source for requirements, environment variables,
+> verification gates, footguns and limitations.
+
 Run mjlab PPO training with mujoco_warp physics on an Intel Arc iGPU. The
 package installs into an existing mjlab project's venv: the project's code,
 config, and lock file stay untouched, and tasks resolve through mjlab's plugin
@@ -218,15 +224,16 @@ is the only reliable detector.
 | `MJLAB_PPO_DEVICE` | `xpu` if available, else `cpu` | torch device for the PPO runner in `bench` |
 | `MJLAB_TORCH_THREADS` | `2` | torch intra-op threads cap. Env managers run hundreds of tiny torch ops per step; all-core default wastes ~3 CPU cores for no speed (measured 4096 envs: 14->4.6 cores, 2->1.9 cores, same wall). Override if you want more. |
 
-## Performance (Arc 130T, microduck velocity, 4096 envs)
+## Performance
 
-- ~22,000 env-steps/s end-to-end on a quiet desktop vs ~258 on the CPU
-  device (the 0.2.0 archive measured 5,485) — every gain since is
-  itemized in docs/performance.md. A background GPU app costs 10–45 % of
-  throughput; the train/bench entries warn at startup.
-- Numerics: `max |sycl − cpu|` over 100-step rollouts on the same
-  model/actions ≈ 2–3e-06.
-- Microbenchmark: 16M-float saxpy ~7.5× CPU bandwidth.
+Every number — headline throughput, per-step budgets, kernel rankings,
+error bars, and the verdict on each optimization — lives in
+[`docs/performance.md`](docs/performance.md), the single measurement
+archive. Physics agrees with the same-model CPU reference at
+`max |sycl − cpu| ≈ 3e-06`; a background GPU app costs 10–45 % of
+throughput, and the train/bench entries warn at startup. The headline
+throughput lives on the [front page](README.md) and the archive — this
+manual does not restate numbers so they cannot drift out of sync.
 
 ## Footguns — each learned the hard way
 
