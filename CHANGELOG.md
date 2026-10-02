@@ -8,6 +8,19 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Collision workspace pool + USM pool trim** (`MJLAB_SYCL_WS_POOL`):
+  mujoco_warp's convex_narrowphase allocates ~1.5 GB of GJK/EPA scratch
+  PER CALL at 4096 envs ((naccdmax, 112/224/256)) and drops it at return
+  -- ~18 GB of alloc/free churn over 12 steps, RSS pinned at the churn
+  high-water. A shape-keyed checkout pool reuses the scratch (in-order
+  queue + write-before-read semantics make this safe and keep the step
+  graph's baked pointers stable). Plus `wp_sycl_pool_trim` (returns free
+  lists to the OS -- a trim under live graphs crashes the replay, so it
+  frees graphs first), `wp_sycl_pool_stats`/`wp_sycl_pool_hist` census
+  exports and `scripts/probe_memory.py`. Measured: free lists 2,474 ->
+  44 MB, live 5,029 -> 2,871 MB, RSS steady with no churn spikes;
+  determinism bit-equal and physics 1.863e-08 unchanged; perf
+  wall-neutral (paired A/B -1.3 % / +1.1 %).
 - **Native fused quad_gauss kernel** (`wp_sycl_quad_gauss`,
   `MJLAB_SYCL_NATIVE_QUAD=0` to disable): the prepare_quad+prepare_gauss
   fusion re-implemented natively -- unit-verified BIT-EXACT (0.0) on the

@@ -185,6 +185,46 @@ def hinc(J, D, state, changed_ids, changed_count, h, nv_pad: int,
               h.ptr, nv_pad, efc_stride, ids_stride, J.shape[0]) == 0
 
 
+def pool_stats() -> tuple:
+    """(live_bytes, free_list_bytes, pending_bytes) of the USM pool."""
+    try:
+        import ctypes
+
+        from mjlab_sycl.backend._src import build as _build
+
+        dll = _build.ensure_sycl_runtime()
+        fn = dll.wp_sycl_pool_stats
+        fn.argtypes = [ctypes.POINTER(ctypes.c_longlong)] * 3
+        a = ctypes.c_longlong()
+        b = ctypes.c_longlong()
+        c = ctypes.c_longlong()
+        fn(ctypes.byref(a), ctypes.byref(b), ctypes.byref(c))
+        return a.value, b.value, c.value
+    except Exception:
+        return -1, -1, -1
+
+
+def pool_trim(with_graphs: bool = True) -> None:
+    """Return all pooled USM blocks to the OS (free-list trim).
+
+    With ``with_graphs`` (default) every recorded command graph is freed
+    first: replayed graphs bake raw pointers and cannot survive the pool
+    releasing blocks (measured access violation). The graphs re-arm within
+    a few calls. The trim drains the queue first; live arrays never sit in
+    the free lists."""
+    try:
+        if with_graphs:
+            from mjlab_sycl import graph_batch
+
+            graph_batch.free_all_graphs()
+        from mjlab_sycl.backend._src import build as _build
+
+        dll = _build.ensure_sycl_runtime()
+        dll.wp_sycl_pool_trim()
+    except Exception:
+        pass  # best-effort
+
+
 def qfrc_constraint(J, force, nefc, done, out, nv: int, nv_pad: int,
                     njmax_pad: int) -> bool:
     """Native qfrc_constraint = J^T @ force. Returns True when it ran."""

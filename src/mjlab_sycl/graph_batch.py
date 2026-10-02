@@ -61,6 +61,26 @@ def recording_active() -> bool:
     return _RECORDING
 
 
+def free_all_graphs() -> int:
+    """Release every recorded graph; they re-arm within a few calls.
+
+    Needed before a USM pool trim: a replayed graph bakes raw pointers and
+    cannot survive the pool releasing blocks (measured access violation).
+    Returns the number of graphs freed."""
+    n = 0
+    api = _api()
+    if api is None:
+        return 0
+    for store in (_CACHE, _SEQ):
+        for e in list(store.values()):
+            if getattr(e, "graph", None) is not None:
+                api.wp_sycl_graph_free(e.graph)
+                e.graph = None
+                e.launches = -1  # back to UNSEEN: re-count, re-record
+                n += 1
+    return n
+
+
 def stats() -> dict:
     return dict(_STATS)
 

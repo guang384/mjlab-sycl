@@ -265,7 +265,32 @@ def patch_simulation_for_sycl() -> None:
   # correctly; the host writes that follow (reset's state writes) are
   # covered by drained(reset)'s sync, which runs before _reset_idx applies
   # the new state through torch.
-  sim_mod.Simulation.step = orig_step
+  # USM pool trims: construction + JIT-churn blocks stick in the pool's
+  # free lists otherwise (measured 2.1 GB at 4096 envs = 50% of RSS).
+  # pool_trim frees recorded graphs first (a replayed graph bakes raw
+  # pointers -- trimming underneath it crashed the replay, measured), so
+  # any step is a safe window; the graphs re-arm within two calls. Two
+  # trims cover the early-churn window without touching steady state.
+  _step_trim_state = [0]
+
+  def step_trimmed(self):
+    orig_step(self)
+    _step_trim_state[0] += 1
+    if _step_trim_state[0] in (2, 10):
+      try:
+        from mjlab_sycl import native_kernels
+
+        native_kernels.pool_trim()
+        if os.environ.get("MJLAB_SYCL_DEBUG_TRIM"):
+          import psutil
+
+          print(f"[trim] step {_step_trim_state[0]}: rss="
+                f"{psutil.Process().memory_info().rss / 2**20:.0f} MB", flush=True)
+      except Exception as _e:
+        if os.environ.get("MJLAB_SYCL_DEBUG_TRIM"):
+          print(f"[trim] step {_step_trim_state[0]} FAILED: {_e!r}", flush=True)
+
+  sim_mod.Simulation.step = step_trimmed
   sim_mod.Simulation.reset = drained(orig_reset)
   # sense: when a sensor context exists, finalize() drains before its host
   # reads (postprocess_rays is torch-only) and sense() launches nothing
@@ -332,6 +357,76 @@ def _install_batched_polling() -> None:
   if not os.environ.get("MJLAB_SYCL_POLL_EVERY"):
     os.environ["MJLAB_SYCL_POLL_EVERY"] = "8"
   _sycl_loop.install_poll_batching()
+
+
+_WS_POOL: dict = {}  # (shape, dtype) -> [spare wp.array] -- collision scratch
+
+
+def _install_workspace_pool() -> None:
+  """Reuse mujoco_warp's per-call collision scratch across calls.
+
+  convex_narrowphase allocates ~1.5 GB of GJK/EPA workspaces per call at
+  4096 envs ((naccdmax=143360, 112/224/256) etc.) and drops them at
+  return: ~18 GB of alloc/free churn over 12 steps, RSS held at the
+  churn high-water, and the pool's free lists pinned by the never-timed
+  release. The buffers are uninitialized scratch (wp.empty), fully
+  re-written per call, and the in-order queue sequences call N+1's
+  kernels after call N's -- so reuse is safe and makes the step graph's
+  baked pointers STABLE (they dangle after a trim otherwise, measured).
+  wp.empty is served from a shape-keyed checkout pool for the duration
+  of the wrapped call; every request gets a distinct buffer. Kill
+  switch: MJLAB_SYCL_WS_POOL=0.
+  """
+  if os.environ.get("MJLAB_SYCL_WS_POOL", "1").strip().lower() in (
+      "0", "false", "off",
+  ):
+    return
+
+  from mujoco_warp._src import collision_convex as _cc
+  from mujoco_warp._src import collision_core as _ccore
+
+  _orig_empty = wp.empty
+  _targets = {
+      "convex_narrowphase": (_cc.convex_narrowphase,),
+      "create_collision_context": (_ccore.create_collision_context,),
+  }
+
+  def pooled(fn):
+    def wrapper(*args, **kwargs):
+      checked = []
+
+      def serve_empty(shape, dtype=float, device=None, **k):
+        key = (tuple(shape) if isinstance(shape, (tuple, list)) else (shape,),
+               str(dtype))
+        bucket = _WS_POOL.get(key)
+        arr = bucket.pop() if bucket else _orig_empty(
+            shape, dtype=dtype, device=device, **k)
+        checked.append((key, arr))
+        return arr
+
+      wp.empty = serve_empty
+      try:
+        return fn(*args, **kwargs)
+      finally:
+        wp.empty = _orig_empty
+        for key, arr in checked:
+          _WS_POOL.setdefault(key, []).append(arr)
+
+    return wrapper
+
+  _cc.convex_narrowphase = pooled(_cc.convex_narrowphase)
+  _ccore.create_collision_context = pooled(_ccore.create_collision_context)
+  # the driver may hold earlier references: rebind where the names are used
+  try:
+    from mujoco_warp._src import collision_driver as _cd
+    _cd.convex_narrowphase = _cc.convex_narrowphase
+    _cd.create_collision_context = _ccore.create_collision_context
+  except Exception:
+    pass
+  print(
+      "[sycl-ws-pool] collision scratch reuse installed "
+      "(MJLAB_SYCL_WS_POOL=0 to disable)"
+  )
 
 
 def _install_step_graph() -> None:
@@ -475,6 +570,13 @@ _INTERCEPTOR_LAYERS = (
         "solve, bit-identical physics (extra iterations are guarded no-ops "
         "via ctx.done). MJLAB_SYCL_POLL_EVERY=1 restores warp's original "
         "per-iteration polling.",
+    ),
+    (
+        _install_workspace_pool,
+        "Per-call collision scratch reuse (convex_narrowphase's GJK/EPA "
+        "workspaces: ~1.5 GB allocated+dropped per call at 4096 envs). "
+        "Must sit before the step graph so the recorded pointers are the "
+        "stable pooled buffers. MJLAB_SYCL_WS_POOL=0 to disable.",
     ),
     (
         _install_step_graph,

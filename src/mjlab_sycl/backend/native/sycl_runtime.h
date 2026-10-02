@@ -133,6 +133,13 @@ WP_SYCL_API int wp_sycl_quad_gauss(
     long long efc_stride, long long ctx_stride,
     long long nv_stride, long long adr_stride,
     long long batch);
+// Return all pooled USM blocks to the OS (free-list trim; drains first).
+WP_SYCL_API void wp_sycl_pool_trim();
+// Pool census: (live, free-list, pending) bytes.
+WP_SYCL_API void wp_sycl_pool_stats(long long* live, long long* free_b,
+                                    long long* pending);
+// Pool size histogram: (size_bytes, count) pairs by bytes descending.
+WP_SYCL_API int wp_sycl_pool_hist(long long* out_pairs, int max_n);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

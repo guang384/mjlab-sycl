@@ -330,6 +330,59 @@ void wp_sycl_free(void* ptr) {
     pool.sizes.erase(it);
 }
 
+// Return every pooled block to the OS: free lists retain the construction
+// high-water mark forever otherwise (measured: ~0.6 MB/env of churn kept
+// resident). Drains first so pending frees become safe to release. Only
+// touches pooled blocks -- live arrays are never in the free lists.
+
+void wp_sycl_pool_trim() {
+    drain_and_recycle();
+    UsmPool& pool = the_pool();
+    std::lock_guard<std::mutex> lock(pool.mutex);
+    for (auto& [size, blocks] : pool.free_lists) {
+        for (void* p : blocks) {
+            sycl::free(p, the_queue());
+        }
+    }
+    pool.free_lists.clear();
+}
+
+// Pool census: (live_bytes, free_bytes, pending_bytes) across the pool.
+void wp_sycl_pool_stats(long long* live, long long* free_b, long long* pending) {
+    UsmPool& pool = the_pool();
+    std::lock_guard<std::mutex> lock(pool.mutex);
+    long long lv = 0, frb = 0, pd = 0;
+    for (auto& [ptr, size] : pool.sizes) lv += size;
+    for (auto& [size, blocks] : pool.free_lists) frb += size * blocks.size();
+    for (auto& [ptr, size] : pool.pending) pd += size;
+    if (live) *live = lv;
+    if (free_b) *free_b = frb;
+    if (pending) *pending = pd;
+}
+
+// Pool size histogram: fills (size_bytes, count) pairs sorted by bytes
+// descending, up to max_n entries; returns the number written. The size
+// fingerprints the allocating call site.
+int wp_sycl_pool_hist(long long* out_pairs, int max_n) {
+    UsmPool& pool = the_pool();
+    std::lock_guard<std::mutex> lock(pool.mutex);
+    std::unordered_map<size_t, long long> counts;
+    for (auto& [ptr, size] : pool.sizes) counts[size] += 1;
+    for (auto& [size, blocks] : pool.free_lists) counts[size] += (long long)blocks.size();
+    for (auto& [ptr, size] : pool.pending) counts[size] += 1;
+    std::vector<std::pair<long long, size_t>> rows;
+    for (auto& [size, n] : counts) rows.push_back({(long long)size * n, size});
+    std::sort(rows.rbegin(), rows.rend());
+    int k = 0;
+    for (auto& [bytes, size] : rows) {
+        if (k >= max_n) break;
+        out_pairs[k * 2] = (long long)size;
+        out_pairs[k * 2 + 1] = counts[size];
+        ++k;
+    }
+    return k;
+}
+
 void wp_sycl_memset(void* ptr, int value, size_t size) {
     g_last_kernel.store("wp_sycl_memset");
     if (ptr != nullptr && size > 0) {
