@@ -13,3 +13,4 @@ logs/
 src/mjlab_sycl/backend/warpsycl.lib
 src/mjlab_sycl/backend/warpsycl.exp
 scripts/bench/stream_matrix.exe
+scripts/bench/l2_reread.exe
