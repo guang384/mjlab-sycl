@@ -55,7 +55,19 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
   compute engine sits at ~97 % busy during the bench (GPU-bound); desktop
   compositing (dwm/ZCode/TeleAgent) holds ~20 % of the shared 3D engine in
   both sessions -- constant contention, not the variable.  Read every
-  number in this file with a +-20 % session/thermal error bar.
+  number in this file with a +-20 % session error bar.
+
+  RE-ATTRIBUTION (2026-10-02): the operator reports the slow historical
+  sessions ran with co-occurring GPU apps (video playback et al.), making
+  BUS CONTENTION -- not thermals -- the leading variance driver. Measured
+  the same day: a background torch.xpu copy hog at ~50 % duty (~85 GB/s
+  while active) drops the bench from 14,453 to 8,000 env-steps/s (-45 %);
+  heavier overlap reaches -65 %. A video-grade background load plausibly
+  costs 10-30 %. Consequence: bench/train on a QUIET desktop -- closing
+  GPU-consuming apps is worth more than any remaining code candidate, and
+  the quiet-desktop numbers (~15.1-15.9k eps) are the true baseline. The
+  paired A/Bs in this file compare arms under similar contamination and
+  stay valid.
 
 ## Where env.step goes (census)
 
