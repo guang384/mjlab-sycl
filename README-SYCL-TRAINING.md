@@ -54,6 +54,22 @@ footguns).
 
 ## Install
 
+### A released version
+
+Into your **mjlab project's venv** — `--no-deps` because the project's own
+lockfile owns the dependency pins, `--isolated` to guard against a global
+pip `target=` redirect:
+
+    <project>\.venv\Scripts\python.exe -m pip install --isolated --no-deps "git+https://github.com/guang384/mjlab-sycl@v0.3.0"
+    <project>\.venv\Scripts\mjlab-sycl-install.exe --warmup <TASK>
+    <project>\.venv\Scripts\mjlab-sycl-check.exe
+
+(`v0.3.0` = the release tag; the release's `.whl` installs the same way.)
+Not published to PyPI — the git tag and release wheel are the channels.
+
+### From source (contributors)
+
+
 Into your mjlab project's venv:
 
     cd <your mjlab project>          # e.g. microduck_rl

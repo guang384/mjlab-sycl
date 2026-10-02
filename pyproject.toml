@@ -6,7 +6,7 @@ build-backend = "uv_build"
 name = "mjlab-sycl"
 version = "0.2.0"
 description = "Intel GPU (SYCL) training support for mjlab: warp-sycl runtime patch + barrier-free flat kernels + a select_gpus-free train entry + verification gates"
-readme = "README-SYCL-TRAINING.md"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 dependencies = [

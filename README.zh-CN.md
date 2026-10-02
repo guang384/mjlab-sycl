@@ -42,6 +42,17 @@ mjlab 技术栈原样搬到 Intel iGPU/Arc 上训练，**不改你项目的任�
 <project>\.venv\Scripts\python.exe -m pip install "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu
 ```
 
+安装已发布版本（装进你的 **mjlab 项目 venv**，`--no-deps` 是因为依赖版本由项目
+自己的 lockfile 决定）：
+
+```powershell
+<project>\.venv\Scripts\python.exe -m pip install --isolated --no-deps "git+https://github.com/guang384/mjlab-sycl@v0.3.0"
+<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup <任务名>
+<project>\.venv\Scripts\mjlab-sycl-check.exe
+```
+
+（`v0.3.0` 换成目标版本号即可；发布页的 `.whl` 安装方式相同。本包不在 PyPI 发布。）
+
 然后训练任意已注册任务：
 
 ```powershell

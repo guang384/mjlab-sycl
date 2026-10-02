@@ -8,6 +8,12 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- `RELEASING.md`: maintainer release checklist (version bump ->
+  changelog fold -> wheel build + contents check -> gate smoke ->
+  tag -> GitHub release), validated end to end against a locally
+  built wheel (ships warpsycl.dll + full backend + 5 console scripts).
+  The READMEs gain an 'install a released version' path (git tag or
+  release wheel); package metadata now shows the landing page.
 - **The torch CPU-wheel trap is now named everywhere** (a plain
   `pip install torch` installs the CPU build; PPO silently falls back
   to CPU and iterations run ~3x slower with no error): train/bench

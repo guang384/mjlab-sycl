@@ -122,4 +122,5 @@ ordinary commits in this project's history.
 
 Bugs, benchmarks from other Intel GPUs and feature ideas: [Issues](https://github.com/guang384/mjlab-sycl/issues)
 / [Discussions](https://github.com/guang384/mjlab-sycl/discussions). See
-[CHANGELOG.md](CHANGELOG.md) for history.
+[CHANGELOG.md](CHANGELOG.md) for history and [RELEASING.md](RELEASING.md)
+for the maintainer release checklist.
