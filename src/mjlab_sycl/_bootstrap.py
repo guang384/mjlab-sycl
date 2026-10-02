@@ -139,6 +139,32 @@ def preload_oneapi_sycl_runtime(oneapi_bin: str) -> None:
         pass  # optional component: leave the loader free to find another copy
 
 
+def cold_cache_notice() -> None:
+  """Tell the user what the one-time kernel compile is BEFORE it happens.
+
+  A cold kernel cache means the first train/bench run JIT-compiles ~100
+  kernel modules (~3 min at 4096 envs). Silent minutes are the classic
+  first-run experience killer. Best-effort: never raises, prints only on
+  a cold cache. Call after wp.init()."""
+  try:
+    import warp
+
+    cache = warp.config.kernel_cache_dir
+    n = sum(
+        1
+        for e in os.scandir(cache)
+        if e.is_dir() and e.name.startswith("wp_")
+    ) if os.path.isdir(cache) else 0
+    if n < 20:
+      print(f"[mjlab-sycl] first run: JIT-compiling kernel modules "
+            f"(one-time, ~3 min at 4096 envs) into {cache}", flush=True)
+      print("[mjlab-sycl]   later runs reuse them; to pay the cost at "
+            "install time instead: python -m mjlab_sycl install --warmup",
+            flush=True)
+  except Exception:
+    pass
+
+
 def configure_torch_threads(default: int = 2) -> None:
   """Cap torch intra-op threads (default 2, override MJLAB_TORCH_THREADS).
 

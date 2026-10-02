@@ -30,6 +30,7 @@ mjlab-sycl-train = "mjlab_sycl.train:main"
 mjlab-sycl-bench = "mjlab_sycl.bench:main"
 mjlab-sycl-test = "mjlab_sycl.test:main"
 mjlab-sycl-check = "mjlab_sycl.doctor:main"
+mjlab-sycl-install = "mjlab_sycl.install:main"
 
 [tool.pytest.ini_options]
 testpaths = ["src/mjlab_sycl/test_overlay.py"]

@@ -8,6 +8,14 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **First-run UX**: the one-time kernel JIT (~3.5 min, 108 modules)
+  no longer ambushes newcomers -- train/bench print a notice before it
+  happens, and `mjlab-sycl-install --warmup [TASK]` pays the cost at
+  install time (measured: cold first run 3m28s -> warmed 15s; warm
+  the task you will train, size variants are per-task). Adds the
+  missing `mjlab-sycl-install` console script so the command family
+  is `{install,check,train,bench,test}` end to end; README documents
+  the measured fresh-clone-to-first-step path (~10 min).
 - **Collision workspace pool + USM pool trim** (`MJLAB_SYCL_WS_POOL`):
   mujoco_warp's convex_narrowphase allocates ~1.5 GB of GJK/EPA scratch
   PER CALL at 4096 envs ((naccdmax, 112/224/256)) and drops it at return

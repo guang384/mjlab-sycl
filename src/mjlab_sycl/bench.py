@@ -54,6 +54,9 @@ def main() -> None:
   args = parser.parse_args()
 
   wp.init()
+  from mjlab_sycl._bootstrap import cold_cache_notice
+
+  cold_cache_notice()
   if args.device == "sycl":
     patch_simulation_for_sycl()
 

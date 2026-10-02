@@ -53,6 +53,23 @@ Then train any registered task:
 
 One-command setup into a fresh project: `scripts/setup_microduck.ps1 -Repo <project>`.
 
+**First run (one-time):** the first train/bench run JIT-compiles the kernel
+modules — measured 3.5 min on this box, cached afterwards. The entries
+print a notice before it happens. To pay the cost at install time, warm
+YOUR task (task-specific size variants are compiled per task):
+
+```powershell
+<project>\.venv\Scripts\mjlab-sycl-install.exe --warmup Mjlab-Velocity-Flat-MicroDuck
+```
+
+A warmed first train starts in seconds instead of minutes. Full path from
+a fresh clone to first training step: `uv sync` → `pip install -e` →
+`mjlab-sycl-install --warmup <task>` → `mjlab-sycl-train` — ≈10 minutes,
+mostly `uv sync` + one-time JIT. The command family is
+`mjlab-sycl-{install,check,train,bench,test}`; `mjlab-sycl-check` verifies
+platform, overlay sync, oneAPI runtime, GPU, torch XPU and the task
+registry with a per-item fix when something is missing.
+
 See **[README-SYCL-TRAINING.md](README-SYCL-TRAINING.md)** for requirements
 (Windows + Python 3.12 + Intel GPU + oneAPI), the full install/usage story,
 verification gates, environment variables and the hard-won footguns.

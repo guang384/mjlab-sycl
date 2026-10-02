@@ -134,7 +134,66 @@ def ensure_overlay_synced() -> None:
   raise SystemExit(2)
 
 
+def _warmup(task: str | None) -> int:
+  """Compile the kernel modules now so the first training run doesn't pay
+  the one-time JIT (~3 min at 4096 envs) mid-session.
+
+  Builds a 2-env instance of ``task`` (or the first registered task) and
+  steps it twice through the patched stack -- the full kernel set for
+  that task's shapes gets compiled and cached. Never fails the install:
+  returns 0 on success, 1 with a message otherwise."""
+  import time
+
+  t0 = time.time()
+  print("[mjlab-sycl] warmup: compiling kernel modules (one-time, ~3 min)...")
+  try:
+    from mjlab_sycl._bootstrap import configure_torch_threads
+
+    configure_torch_threads()
+    import torch
+
+    from mjlab_sycl.runtime_patch import patch_simulation_for_sycl
+
+    patch_simulation_for_sycl()
+    from mjlab.envs import ManagerBasedRlEnv
+    from mjlab.tasks import registry
+
+    if not task:
+      names = sorted(registry.list_tasks())
+      if not names:
+        print("[mjlab-sycl] warmup skipped: no tasks registered")
+        return 1
+      task = names[0]
+    cfg = registry.load_env_cfg(task)
+    cfg.scene.num_envs = 2
+    env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
+    env.reset()
+    for _ in range(2):
+      env.step(torch.zeros((2, env.action_manager.total_action_dim)))
+    print(f"[mjlab-sycl] warmup done in {time.time() - t0:.0f}s "
+          f"({task}, 2 envs) -- later runs start warm")
+    return 0
+  except Exception as e:
+    print(f"[mjlab-sycl] warmup failed ({e!r}) -- training still works, "
+          "the first run will compile instead")
+    return 1
+
+
 def main() -> int:
+  import argparse
+
+  parser = argparse.ArgumentParser(
+      prog="mjlab-sycl-install",
+      description="Overlay the SYCL backend and self-check")
+  # the documented `python -m mjlab_sycl install` spells the subcommand out;
+  # the console script omits it. Accept (and ignore) exactly that token.
+  parser.add_argument("cmd", nargs="?", default="install", choices=["install"])
+  parser.add_argument("--warmup", nargs="?", const="", default=None, metavar="TASK",
+                      help="also JIT-compile the kernel modules now (first "
+                           "registered task by default) so the first training "
+                           "run starts warm")
+  args = parser.parse_args()
+
   # sycl8.dll PATH ordering -- must run before torch/warp come up (see
   # _bootstrap); the torch-XPU availability probe below imports torch.
   from mjlab_sycl._bootstrap import prepare_sycl_runtime_path
@@ -222,6 +281,8 @@ def main() -> int:
       print(f"    - {p}", file=sys.stderr)
     return 1
   print(f"[mjlab-sycl] overlay verified: {n} files + warpsycl.dll match this package")
+  if args.warmup is not None:
+    _warmup(args.warmup or None)
   return 0
 
 

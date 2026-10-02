@@ -50,6 +50,9 @@ def main() -> None:
   contention.check()
 
   wp.init()
+  from mjlab_sycl._bootstrap import cold_cache_notice
+
+  cold_cache_notice()
   patch_simulation_for_sycl()
 
   from mjlab.envs import ManagerBasedRlEnv
