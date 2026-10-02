@@ -8,6 +8,12 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Native update_constraint_efc + deterministic cost fold**
+  (`MJLAB_SYCL_NATIVE_EFC`): force/state/change-tracking bit-identical
+  (unit-verified incl. true elliptic-cone rows), per-row cost partials
+  replace the same-address atomic storm with a serial fold -- cost is
+  now deterministic (the atomic order was run-to-run nondeterministic).
+  Swapped-order A/B: +0.8 / +2.5 % (mean +1.6 %). All 6 gates green.
 - `mjlab-sycl-test` now runs 6 verdicts: the two orphaned GPU test
   modules (launch-cache semantics, fused-kernel chain tests) join the
   gate chain via lazy imports (test_fused_ab installs the patch at
@@ -326,6 +332,13 @@ All notable changes to mjlab-sycl.
   env-steps/s, consistent with the thermal attribution).
 
 ### Fixed
+- **quad_gauss elliptic branch (latent)**: the native rewrite used the
+  wrong CONTACT_ELLIPTIC constant (mujoco_warp mirrors mjtConstraint:
+  EQUALITY=0..CONTACT_ELLIPTIC=7) and its row-block early-outs used
+  `return` where the warp kernel's per-row return semantics are
+  `continue` -- both invisible on pyramidal workloads (microduck, the
+  gate model). Caught by extending both unit tests with true
+  elliptic rows; the same constant is fixed in efc_force.
 - **Workspace pool device-key bug** (found by the expanded gate chain):
   pooled collision scratch keyed only on (shape, dtype) -- with
   `device=None` resolving to the ambient default, a cpu-scoped run's

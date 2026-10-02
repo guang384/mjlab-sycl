@@ -140,6 +140,22 @@ WP_SYCL_API void wp_sycl_pool_stats(long long* live, long long* free_b,
                                     long long* pending);
 // Pool size histogram: (size_bytes, count) pairs by bytes descending.
 WP_SYCL_API int wp_sycl_pool_hist(long long* out_pairs, int max_n);
+// update_constraint_efc with per-row cost partials + deterministic fold
+// (see the .cpp). Returns 0 on success.
+WP_SYCL_API int wp_sycl_efc_force(
+    const void* impratio, long long impratio_n,
+    const int* ne, const int* nf, const int* nefc,
+    const void* friction, const int* cdim, const int* adr,
+    const int* type, const int* ids,
+    const void* D, const void* fricloss, const int* nacon,
+    const void* Jaref, const unsigned char* done,
+    void* force_out, void* state_out, void* partial_out,
+    void* changed_ids, void* changed_count,
+    long long efc_stride, long long ctx_stride, long long adr_stride,
+    long long track_changes, long long batch);
+WP_SYCL_API int wp_sycl_cost_fold(const void* partial, const int* nefc,
+                                  const unsigned char* done, void* cost_out,
+                                  long long ctx_stride, long long batch);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

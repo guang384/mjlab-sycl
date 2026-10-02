@@ -16,9 +16,8 @@ rng = np.random.default_rng(37)
 
 NEFC = np.array([5, 100, 20, 176, 46, 1], dtype=np.int32)
 DONE = np.array([False, False, True, False, False, True])
-# efc types: all non-elliptic (0=eq? use 2,3 limit/contact values != 1)
-TYPE = rng.integers(0, 3, (NW, NJMAX)).astype(np.int32)
-TYPE[TYPE == 1] = 2  # avoid CONTACT_ELLIPTIC
+# efc types: mix incl. true ELLIPTIC=7 rows (exercises the cone branch)
+TYPE = rng.integers(0, 8, (NW, NJMAX)).astype(np.int32)
 ID = rng.integers(0, 16, (NW, NJMAX)).astype(np.int32)
 D = rng.random((NW, NJMAX)).astype(np.float32) + 0.5
 JAREF = rng.standard_normal((NW, NJMAX)).astype(np.float32)

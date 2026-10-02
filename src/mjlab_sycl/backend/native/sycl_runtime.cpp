@@ -996,7 +996,7 @@ WP_SYCL_API int wp_sycl_quad_gauss(
             [=](sycl::nd_item<1> it) {
                 const int w = static_cast<int>(it.get_group_linear_id());
                 const int lane = static_cast<int>(it.get_local_linear_id());
-                constexpr int kElliptic = 1;  // ConstraintType.CONTACT_ELLIPTIC
+                constexpr int kElliptic = 7;  // ConstraintType.CONTACT_ELLIPTIC
 
                 // ---- prepare_gauss fold: work-item (world, 0) only --------
                 if (lane == 0) {
@@ -1050,9 +1050,9 @@ WP_SYCL_API int wp_sycl_quad_gauss(
                         const int conid = ids[e];
                         const int* adr = contact_efc_address +
                             static_cast<size_t>(conid) * adr_stride;
-                        if (conid >= nacon[0]) return;
+                        if (conid >= nacon[0]) continue;
                         const int efcid0 = adr[0];
-                        if (e != efcid0) return;
+                        if (e != efcid0) continue;
                         const int dim = contact_dim[conid];
                         const float* fr = static_cast<const float*>(contact_friction) +
                             static_cast<size_t>(conid) * 5;
@@ -1063,7 +1063,7 @@ WP_SYCL_API int wp_sycl_quad_gauss(
                         float uu = 0.0f, uv = 0.0f, vv = 0.0f;
                         for (int j = 1; j < dim; ++j) {
                             const int efcidj = adr[j];
-                            if (efcidj < 0) return;
+                            if (efcidj < 0) break;
                             const float jvj = jvw[efcidj];
                             const float jarefj = Jw[efcidj];
                             const float dj = Dw[efcidj];
@@ -1100,6 +1100,185 @@ WP_SYCL_API int wp_sycl_quad_gauss(
         return 0;
     } catch (std::exception const& e) {
         std::fprintf(stderr, "wp_sycl_quad_gauss failed: %s\n", e.what());
+        return -1;
+    }
+}
+
+// ---- update_constraint_efc: per-row cost partials (atomics removed) --------
+//
+// The warp kernel's per-row atomic_add onto ctx_cost[world] -- the same
+// address hammered by ~46 rows -- is the launch's main stall. This rewrite
+// keeps force/state/change-tracking bit-identical (same branch math, same
+// safe_div, same old-state-then-write order) but stores each row's cost
+// contribution to a per-row partial; wp_sycl_cost_fold sums them
+// deterministically (the atomic order was run-to-run nondeterministic
+// anyway). Seam only in the solver iteration where fold + gauss_cost pair;
+// the inverse path keeps the upstream kernel.
+
+WP_SYCL_API int wp_sycl_efc_force(
+    const void* impratio, long long impratio_n,
+    const int* ne, const int* nf, const int* nefc,
+    const void* friction, const int* cdim, const int* adr,
+    const int* type, const int* ids,
+    const void* D, const void* fricloss, const int* nacon,
+    const void* Jaref, const unsigned char* done,
+    void* force_out, void* state_out, void* partial_out,
+    void* changed_ids, void* changed_count,
+    long long efc_stride, long long ctx_stride, long long adr_stride,
+    long long track_changes, long long batch) {
+    if (batch <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_efc_force");
+        constexpr float kMinVal = 1e-15f;  // types.MJ_MINVAL
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                const int lane = static_cast<int>(it.get_local_linear_id());
+                const int nef = nefc[w] < ctx_stride ? nefc[w] : (int)ctx_stride;
+                const float* Jr = (const float*)Jaref + (size_t)w * ctx_stride;
+                const float* Dw = (const float*)D + (size_t)w * efc_stride;
+                const float* Lw = (const float*)fricloss + (size_t)w * efc_stride;
+                const int* tw = type + (size_t)w * efc_stride;
+                const int* iw = ids + (size_t)w * efc_stride;
+                float* fw = (float*)force_out + (size_t)w * efc_stride;
+                int* sw = (int*)state_out + (size_t)w * efc_stride;
+                float* pw = (float*)partial_out + (size_t)w * ctx_stride;
+                const int ne_w = ne[w], nf_w = nf[w];
+
+                for (int e = lane; e < nef; e += 32) {
+                    if (done[w]) return;
+                    const bool old_quad =
+                        track_changes != 0 && sw[e] == 1;  // QUADRATIC
+                    const float Jaref_e = Jr[e];
+                    const float D_e = Dw[e];
+                    int new_state = 0;  // SATISFIED
+                    float cost = 0.0f;
+
+                    if (e < ne_w) {
+                        fw[e] = -D_e * Jaref_e;
+                        new_state = 1;
+                        cost = 0.5f * D_e * Jaref_e * Jaref_e;
+                    } else if (e < ne_w + nf_w) {
+                        const float f = Lw[e];
+                        const float rf = f / (D_e != 0.0f ? D_e : kMinVal);
+                        if (Jaref_e <= -rf) {
+                            fw[e] = f;
+                            new_state = 2;  // LINEARNEG
+                            cost = -f * (0.5f * rf + Jaref_e);
+                        } else if (Jaref_e >= rf) {
+                            fw[e] = -f;
+                            new_state = 3;  // LINEARPOS
+                            cost = -f * (0.5f * rf - Jaref_e);
+                        } else {
+                            fw[e] = -D_e * Jaref_e;
+                            new_state = 1;
+                            cost = 0.5f * D_e * Jaref_e * Jaref_e;
+                        }
+                    } else if (tw[e] != 7) {  // != CONTACT_ELLIPTIC
+                        if (Jaref_e >= 0.0f) {
+                            fw[e] = 0.0f;
+                        } else {
+                            fw[e] = -D_e * Jaref_e;
+                            new_state = 1;
+                            cost = 0.5f * D_e * Jaref_e * Jaref_e;
+                        }
+                    } else {
+                        // elliptic cone contact: verbatim zones
+                        const int conid = iw[e];
+                        if (conid >= nacon[0]) continue;
+                        const int* arow = adr + (size_t)conid * adr_stride;
+                        const int efcid0 = arow[0];
+                        if (efcid0 < 0) continue;
+                        const float mu =
+                            ((const float*)friction)[(size_t)conid * 5] *
+                            ((const float*)impratio)[w % impratio_n];
+                        const float N = Jr[efcid0] * mu;
+                        const int dim = cdim[conid];
+                        const float* fr = (const float*)friction + (size_t)conid * 5;
+                        float ufrictionj = 0.0f;
+                        float TT = 0.0f;
+                        for (int j = 1; j < dim; ++j) {
+                            const int efcidj = arow[j];
+                            if (efcidj < 0) continue;
+                            const float fj = fr[j - 1];
+                            const float uj = Jr[efcidj] * fj;
+                            TT += uj * uj;
+                            if (e == efcidj) ufrictionj = uj * fj;
+                        }
+                        const float T = TT > 0.0f ? sycl::sqrt(TT) : 0.0f;
+                        if ((N >= mu * T) || ((T <= 0.0f) && (N >= 0.0f))) {
+                            fw[e] = 0.0f;
+                        } else if ((mu * N + T <= 0.0f) || ((T <= 0.0f) && (N < 0.0f))) {
+                            fw[e] = -D_e * Jaref_e;
+                            new_state = 1;
+                            cost = 0.5f * D_e * Jaref_e * Jaref_e;
+                        } else {
+                            const float D0 = Dw[efcid0];
+                            const float mu2 = mu * mu;
+                            const float dm =
+                                D0 / (mu2 != 0.0f ? mu2 : kMinVal) / (1.0f + mu2);
+                            const float nmt = N - mu * T;
+                            const float force = -dm * nmt * mu;
+                            if (e == efcid0) {
+                                fw[e] = force;
+                                cost = 0.5f * dm * nmt * nmt;
+                            } else {
+                                fw[e] = -(force / (T != 0.0f ? T : kMinVal)) * ufrictionj;
+                            }
+                            new_state = 4;  // CONE
+                        }
+                    }
+                    pw[e] = cost;
+                    sw[e] = new_state;
+                    if (track_changes != 0) {
+                        const bool new_quad = new_state == 1;
+                        if (old_quad != new_quad) {
+                            const int idx = sycl::atomic_ref<int, sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space>(
+                                ((int*)changed_count)[w])
+                                .fetch_add(1);
+                            ((int*)changed_ids)[(size_t)w * ctx_stride + idx] = e;
+                        }
+                    }
+                }
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_efc_force failed: %s\n", e.what());
+        return -1;
+    }
+}
+
+// cost[w] = sum(partial[w, 0:nefc]) -- deterministic serial fold; the
+// gauss kernel that follows adds its 0.5*gauss term on top as before.
+WP_SYCL_API int wp_sycl_cost_fold(const void* partial, const int* nefc,
+                                  const unsigned char* done, void* cost_out,
+                                  long long ctx_stride, long long batch) {
+    if (batch <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_cost_fold");
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                if (done[w] || it.get_local_linear_id() != 0) return;
+                const float* pw = (const float*)partial + (size_t)w * ctx_stride;
+                const int nef = nefc[w] < ctx_stride ? nefc[w] : (int)ctx_stride;
+                float s = 0.0f;
+                for (int e = 0; e < nef; ++e) s += pw[e];
+                ((float*)cost_out)[w] = s;
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_cost_fold failed: %s\n", e.what());
         return -1;
     }
 }

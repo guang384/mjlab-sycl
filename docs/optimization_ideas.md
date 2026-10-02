@@ -171,19 +171,16 @@ bytes (fusing more consumers per J read), not rescheduling. Verdict in
 - **Expected gain (estimate).** submit share 8 % → ~2 % → **3–6 %
   end-to-end**, plus reduced host contention. Effort: 1–2 days.
 
-## T3 — eliminate `update_constraint_efc` cost atomics — **downgraded below the noise floor (2026-10-02)**
+## T3 — eliminate `update_constraint_efc` cost atomics — **landed (2026-10-02, +1.6 % mean)**
 
-Fresh arithmetic from the 2026-10-02 kernel ranking: the whole kernel costs
-0.43 ms x ~9/step = 3.9 ms/step = **1.4 % of the 273 ms step** — and the
-atomics are only part of it (each row also does the elliptic-cone zone
-math, per-row state writes, change tracking). Even eliminating every atomic
-stall outright bounds the win at <0.7 % end-to-end, under the session noise
-bar; the original 1–3 % estimate over-weighted the atomic share. The
-rewrite itself (per-row partial stores + folding the reduction into the
-`(nworld, 1)` gauss_cost kernel, both kernel copies owned) stays sound —
-mechanism, safety and numerics notes below stand — but it only becomes
-worth attempting if a future profile shows atomic stalls dominating the
-kernel, or as a rider on other work in the same files.
+History: a 2026-10-02 downgrade used a wrong launch count (9 vs the
+actual 36/step) and bounded the win at <0.7 %. Redone with the corrected
+budget (~8 % of step) and landed the same day: per-row cost partials
+replace the same-address atomic storm with a deterministic serial fold,
+force/state/change-tracking bit-identical (unit-verified incl. true
+elliptic-cone rows). Measured +0.8 / +2.5 % (mean +1.6 %) -- the low end
+of the corrected 2–4 % estimate -- plus the determinism bonus (cost was
+run-to-run nondeterministic under the atomic order).
 
 - **Mechanism (when attempted).** Replace each of the five
   `atomic_add(ctx_cost_out, worldid, ...)` sites with a per-row store into

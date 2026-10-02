@@ -76,6 +76,17 @@ _SUPPRESS = frozenset(
   }
 )
 _prev_launch = None
+_EFC_PARTIAL_CACHE = {}  # (nworld, njmax) -> scratch wp.array
+
+
+def _efc_partial(nworld: int, njmax: int):
+    key = (nworld, njmax)
+    arr = _EFC_PARTIAL_CACHE.get(key)
+    if arr is None:
+        arr = wp.zeros((nworld, njmax), dtype=float)
+        if len(_EFC_PARTIAL_CACHE) < 4:
+            _EFC_PARTIAL_CACHE[key] = arr
+    return arr
 _orig_solver_iteration = None
 _pending_search_update = None  # deferred launch call awaiting the solve_done merge
 
@@ -215,6 +226,28 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
         *args,
         **kwargs,
       )
+    if key == "update_constraint_ecf" or key == "update_constraint_efc__locals__kernel":
+      from mjlab_sycl import native_kernels
+
+      # inputs = [impratio, ne, nf, nefc, friction, dim, adr, type, id, D,
+      #           fricloss, nacon, Jaref, done]
+      # outputs = [force, state, cost, changed_ids, changed_count]
+      # per-row cost partials replace the same-address atomic storm; the
+      # deterministic fold lands in ctx.cost, then gauss_cost adds its term
+      partial = _efc_partial(inputs[12].shape[0], inputs[12].shape[1])
+      if native_kernels.efc_force(
+          inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5],
+          inputs[6], inputs[7], inputs[8], inputs[9], inputs[10], inputs[11],
+          inputs[12], inputs[13], outputs[0], outputs[1], partial,
+          outputs[3], outputs[4],
+          inputs[9].shape[1], inputs[12].shape[1], inputs[6].shape[1],
+          getattr(kernel, "_mjlab_track", False),
+      ) and native_kernels.cost_fold(
+          partial, inputs[3], inputs[13], outputs[2], inputs[12].shape[1],
+      ):
+        return None  # the native pair ran; suppress the warp launch
+      return _prev_launch(kernel, dim, inputs, outputs, *args, **kwargs)
+
     if key == "update_constraint_init_qfrc_constraint_dense":
       from mjlab_sycl import native_kernels
 
@@ -282,6 +315,20 @@ def install() -> None:
   from warp._src import context as _ctx_mod
 
   _ctx_mod.launch = _intercept_launch
+
+  # tag each update_constraint_efc kernel with its track_changes variant so
+  # the seam can reproduce it exactly (same pattern as the chol factory wrap)
+  _orig_efc_factory = solver.update_constraint_efc
+
+  def _efc_factory_tracked(track_changes):
+    k = _orig_efc_factory(track_changes)
+    try:
+      k._mjlab_track = bool(track_changes)
+    except Exception:
+      pass
+    return k
+
+  solver.update_constraint_efc = _efc_factory_tracked
 
   _orig_solver_iteration = solver._solver_iteration
 

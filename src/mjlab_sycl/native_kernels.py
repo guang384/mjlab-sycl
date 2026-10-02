@@ -24,6 +24,8 @@ _fn_hinc = None
 _fn_qfrc = None
 _fn_jaref = None
 _fn_quad = None
+_fn_efc = None
+_fn_fold = None
 _probed = False
 
 
@@ -44,7 +46,7 @@ def _is_sycl(arr) -> bool:
 
 def _api():
     """Resolve the DLL exports once; None means unavailable (stale DLL)."""
-    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _fn_qfrc, _fn_jaref, _fn_quad, _probed
+    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _fn_qfrc, _fn_jaref, _fn_quad, _fn_efc, _fn_fold, _probed
     if _probed:
         return _fn_mv_jv
     _probed = True
@@ -95,6 +97,18 @@ def _api():
             _fn_jaref = fj
         except AttributeError:
             _fn_jaref = None
+        try:
+            fe = dll.wp_sycl_efc_force
+            fe.restype = ctypes.c_int
+            fe.argtypes = [ctypes.c_void_p] * 19 + [ctypes.c_longlong] * 6
+            _fn_efc = fe
+            ff = dll.wp_sycl_cost_fold
+            ff.restype = ctypes.c_int
+            ff.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_longlong] * 2
+            _fn_fold = ff
+        except AttributeError:
+            _fn_efc = None
+            _fn_fold = None
         try:
             fq2 = dll.wp_sycl_quad_gauss
             fq2.restype = ctypes.c_int
@@ -183,6 +197,40 @@ def hinc(J, D, state, changed_ids, changed_count, h, nv_pad: int,
         return False
     return fn(J.ptr, D.ptr, state.ptr, changed_ids.ptr, changed_count.ptr,
               h.ptr, nv_pad, efc_stride, ids_stride, J.shape[0]) == 0
+
+
+def efc_force(impratio, ne, nf, nefc, friction, cdim, adr, type_, ids, D,
+              fricloss, nacon, Jaref, done, force, state, partial,
+              changed_ids, changed_count, efc_stride, ctx_stride, adr_stride,
+              track_changes: bool) -> bool:
+    """Native update_constraint_efc with per-row cost partials. Returns True
+    when the kernel ran; the caller must then run cost_fold."""
+    if not _enabled("MJLAB_SYCL_NATIVE_EFC"):
+        return False
+    if not _is_sycl(Jaref):
+        return False
+    _api()
+    fn = _fn_efc
+    if fn is None:
+        return False
+    return fn(impratio.ptr, impratio.shape[0], ne.ptr, nf.ptr, nefc.ptr,
+              friction.ptr, cdim.ptr, adr.ptr, type_.ptr, ids.ptr, D.ptr,
+              fricloss.ptr, nacon.ptr, Jaref.ptr, done.ptr, force.ptr,
+              state.ptr, partial.ptr, changed_ids.ptr, changed_count.ptr,
+              efc_stride, ctx_stride, adr_stride, 1 if track_changes else 0,
+              Jaref.shape[0]) == 0
+
+
+def cost_fold(partial, nefc, done, cost, ctx_stride: int) -> bool:
+    """Deterministic sum of the efc cost partials into ctx cost."""
+    if not _enabled("MJLAB_SYCL_NATIVE_EFC"):
+        return False
+    _api()
+    fn = _fn_fold
+    if fn is None:
+        return False
+    return fn(partial.ptr, nefc.ptr, done.ptr, cost.ptr, ctx_stride,
+              partial.shape[0]) == 0
 
 
 def pool_stats() -> tuple:
