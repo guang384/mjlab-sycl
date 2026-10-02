@@ -94,6 +94,15 @@ WP_SYCL_API int wp_sycl_chol_solve(const void* h, const void* grad,
                                    unsigned char* lvalid_out, void* Mgrad,
                                    long long n, long long stride,
                                    long long batch);
+// Set-const cholesky factorize+solve, single-tile case (see the .cpp).
+WP_SYCL_API int wp_sycl_chol_fs(const void* M, const void* y, void* x,
+                                void* L, long long n, long long stride,
+                                long long batch);
+// Incremental Hessian update over changed constraints (bit-exact rewrite).
+WP_SYCL_API int wp_sycl_hinc(const void* J, const void* D, const int* state,
+                             const int* changed_ids, const int* changed_count,
+                             void* h, long long nv_pad, long long efc_stride,
+                             long long ids_stride, long long batch);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

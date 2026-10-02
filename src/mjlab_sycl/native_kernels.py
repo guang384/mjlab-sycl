@@ -19,6 +19,8 @@ import os
 _fn_mv_jv = None
 _fn_jtdaj = None
 _fn_chol = None
+_fn_chol_fs = None
+_fn_hinc = None
 _probed = False
 
 
@@ -30,7 +32,7 @@ def _enabled(name: str) -> bool:
 
 def _api():
     """Resolve the DLL exports once; None means unavailable (stale DLL)."""
-    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _probed
+    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _probed
     if _probed:
         return _fn_mv_jv
     _probed = True
@@ -56,6 +58,17 @@ def _api():
             _fn_chol = fc
         except AttributeError:
             _fn_chol = None
+        fs = getattr(dll, "wp_sycl_chol_fs")
+        fs.restype = ctypes.c_int
+        fs.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_longlong] * 3
+        _fn_chol_fs = fs
+        try:
+            fx = dll.wp_sycl_hinc
+            fx.restype = ctypes.c_int
+            fx.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_longlong] * 4
+            _fn_hinc = fx
+        except AttributeError:
+            _fn_hinc = None
     except Exception:
         _fn_mv_jv = None
     return _fn_mv_jv
@@ -99,3 +112,29 @@ def chol_solve(h, grad, done, changed, lvalid_in, L, lvalid_out, Mgrad,
         return False
     return fn(h.ptr, grad.ptr, done.ptr, changed.ptr, lvalid_in.ptr, L.ptr,
               lvalid_out.ptr, Mgrad.ptr, n, nv_pad, h.shape[0]) == 0
+
+
+def chol_fs(M, y, x, L, n: int, nv_pad: int) -> bool:
+    """Native set-const cholesky factorize+solve (single-tile case).
+    Returns True when the batch ran."""
+    if not _enabled("MJLAB_SYCL_NATIVE_CHOL"):
+        return False
+    _api()
+    fn = _fn_chol_fs
+    if fn is None:
+        return False
+    return fn(M.ptr, y.ptr, x.ptr, L.ptr, n, nv_pad, M.shape[0]) == 0
+
+
+def hinc(J, D, state, changed_ids, changed_count, h, nv_pad: int,
+         efc_stride: int, ids_stride: int) -> bool:
+    """Native incremental Hessian update over changed constraints.
+    Returns True when the batch ran."""
+    if not _enabled("MJLAB_SYCL_NATIVE_HINC"):
+        return False
+    _api()
+    fn = _fn_hinc
+    if fn is None:
+        return False
+    return fn(J.ptr, D.ptr, state.ptr, changed_ids.ptr, changed_count.ptr,
+              h.ptr, nv_pad, efc_stride, ids_stride, J.shape[0]) == 0
