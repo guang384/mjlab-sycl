@@ -268,17 +268,26 @@ Every kernel-schedule candidate has now been measured except T4:
   so the wall is in the warp->SYCL generated code / launch path, not the
   memory system, and we OWN that layer (backend/_src). Item mapping is
   ruled out (row-per-item and linear-stream variants cap identically);
-  block_dim helps 40 % then flat. Remaining hypotheses, each cheap to
-  test with a standalone DPC++ stream benchmark (scalar vs vectorized
-  16B loads x shared vs device USM, plus cache-hint variants): warp
-  emits scalar 4B loads where torch vectorizes; warp's shared-USM
-  allocations may take a different caching path than torch's device USM;
-  torch may use streaming/non-temporal cache policy. If backend tuning
-  recovers even half the gap, EVERY bandwidth-bound kernel in the step
-  (jv, JTDAJ, contact, efc -- the dominant families) speeds up ~1.5-2x;
-  nothing else on this page comes close. Confirm with the e2e gates:
-  this is codegen-level, not numerics-level, so bit-exactness is
-  unaffected.
+  block_dim helps 40 % then flat. Diagnosed 2026-10-02 with a standalone DPC++ matrix (scripts/bench/
+  stream_matrix.cpp; read-only sum + memcpy, 256 MB):
+
+  - device USM: 88-90 GB/s read, 85 GB/s memcpy
+  - shared USM (DPC++): 67-70 GB/s read, 43 GB/s memcpy  <- the 2x write
+    coherence tax on shared, and ~1.25x on reads
+  - warp (shared, no-guard): ~59 GB/s; my guard test 42. Vectorization
+    and ILP are NOT factors (scalar loads reach 88 on device USM).
+
+  So the original 42-vs-88 gap decomposes into USM type (~1.25x reads,
+  2x writes) plus warp-vs-DPC++ codegen (~1.2x). Vectorization: excluded.
+  Revised estimate: warp arrays must stay shared USM (mjlab's WarpBridge
+  zero-copies the pointers into torch CPU tensors; device USM breaks
+  host visibility model-wide). The feasible slice is SELECTIVE device
+  USM for solver-internal scratch never host-read inside a step (ctx.*,
+  efc.J): ~1.25x on ~16 % of step time -> ~1.5-3 % e2e, 2-4 days, medium
+  risk (bridge/field enumeration must be exact). The 2x memcpy win only
+  benefits copy-heavy paths (set_const staging, ~1-2 ms/step). The
+  10-20 % jackpot hypothesized earlier is OFF: the shared-USM constraint
+  caps the recovery near 1.25x for the read-dominant mix.
 - **Bandwidth ceiling, corrected 2026-10-02 by microbenchmark**: the
   device achieves ~80-88 GB/s (torch.xpu copy 87-88 r+w, read-only sum
   79-81; ~65 % of the ~136 GB/s LPDDR5X-8533 x 128-bit theoretical), so
