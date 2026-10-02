@@ -43,6 +43,12 @@ def main() -> None:
                       help="torch device for PPO (default: xpu if available, else cpu)")
   args = parser.parse_args()
 
+  # physics is bus-bound: a background GPU app costs 10-45% of throughput
+  # (docs/performance.md) -- warn before hours go into a contended run
+  from mjlab_sycl import contention
+
+  contention.check()
+
   wp.init()
   patch_simulation_for_sycl()
 

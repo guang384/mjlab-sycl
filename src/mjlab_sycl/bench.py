@@ -43,6 +43,11 @@ def main() -> None:
     "--task", default="Mjlab-Velocity-Flat-MicroDuck"
   )
   parser.add_argument("--num-envs", type=int, default=4096)
+  # physics is bus-bound: a background GPU app poisons the measurement
+  # (docs/performance.md re-attribution) -- warn before numbers are taken
+  from mjlab_sycl import contention
+
+  contention.check()
   parser.add_argument("--iters", type=int, default=6)
   parser.add_argument("--skip-warmup", type=int, default=1,
                       help="iterations to exclude from the mean (compile/warmup)")
