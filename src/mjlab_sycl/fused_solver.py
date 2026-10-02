@@ -191,6 +191,14 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
     key = getattr(kernel, "key", None)
     if key == "linesearch_jaref":
       ctx = _CTX
+      from mjlab_sycl import native_kernels
+
+      if native_kernels.jaref(
+          inputs[1], inputs[2], inputs[0], inputs[3], ctx.cost,
+          outputs[0], ctx.gauss, ctx.cost, ctx.prev_cost, ctx.grad_dot,
+          ctx.search_dot, ctx.changed_efc_count,
+      ):
+        return None  # the native kernel ran; suppress the warp launch
       return _prev_launch(
         _jaref_zeroahead,
         dim,
@@ -207,6 +215,17 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
         *args,
         **kwargs,
       )
+    if key == "update_constraint_init_qfrc_constraint_dense":
+      from mjlab_sycl import native_kernels
+
+      # inputs = [nefc, efc_J, efc_force, njmax, done]; outputs = [qfrc]
+      if native_kernels.qfrc_constraint(
+          inputs[1], inputs[2], inputs[0], inputs[4], outputs[0],
+          outputs[0].shape[1], inputs[1].shape[2], inputs[1].shape[1],
+      ):
+        return None  # the native kernel ran; suppress the warp launch
+      return _prev_launch(kernel, dim, inputs, outputs, *args, **kwargs)
+
     if key in _SUPPRESS:
       return None  # already zeroed by the jaref tail
 

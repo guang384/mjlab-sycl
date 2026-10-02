@@ -21,6 +21,8 @@ _fn_jtdaj = None
 _fn_chol = None
 _fn_chol_fs = None
 _fn_hinc = None
+_fn_qfrc = None
+_fn_jaref = None
 _probed = False
 
 
@@ -41,7 +43,7 @@ def _is_sycl(arr) -> bool:
 
 def _api():
     """Resolve the DLL exports once; None means unavailable (stale DLL)."""
-    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _probed
+    global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _fn_qfrc, _fn_jaref, _probed
     if _probed:
         return _fn_mv_jv
     _probed = True
@@ -78,6 +80,20 @@ def _api():
             _fn_hinc = fx
         except AttributeError:
             _fn_hinc = None
+        try:
+            fq = dll.wp_sycl_qfrc_constraint
+            fq.restype = ctypes.c_int
+            fq.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_longlong] * 4
+            _fn_qfrc = fq
+        except AttributeError:
+            _fn_qfrc = None
+        try:
+            fj = dll.wp_sycl_jaref
+            fj.restype = ctypes.c_int
+            fj.argtypes = [ctypes.c_void_p] * 12 + [ctypes.c_longlong] * 2
+            _fn_jaref = fj
+        except AttributeError:
+            _fn_jaref = None
     except Exception:
         _fn_mv_jv = None
     return _fn_mv_jv
@@ -159,3 +175,35 @@ def hinc(J, D, state, changed_ids, changed_count, h, nv_pad: int,
         return False
     return fn(J.ptr, D.ptr, state.ptr, changed_ids.ptr, changed_count.ptr,
               h.ptr, nv_pad, efc_stride, ids_stride, J.shape[0]) == 0
+
+
+def qfrc_constraint(J, force, nefc, done, out, nv: int, nv_pad: int,
+                    njmax_pad: int) -> bool:
+    """Native qfrc_constraint = J^T @ force. Returns True when it ran."""
+    if not _enabled("MJLAB_SYCL_NATIVE_QFRC"):
+        return False
+    if not _is_sycl(J):
+        return False
+    _api()
+    fn = _fn_qfrc
+    if fn is None:
+        return False
+    return fn(J.ptr, force.ptr, nefc.ptr, done.ptr, out.ptr, nv, nv_pad,
+              njmax_pad, J.shape[0]) == 0
+
+
+def jaref(jv, alpha, nefc, done, cost, Jaref, gauss, cost_out, prev_cost,
+          grad_dot, search_dot, changed_count) -> bool:
+    """Native fused linesearch_jaref + zero-ahead. Returns True when it ran."""
+    if not _enabled("MJLAB_SYCL_NATIVE_JAREF"):
+        return False
+    if not _is_sycl(jv):
+        return False
+    _api()
+    fn = _fn_jaref
+    if fn is None:
+        return False
+    return fn(jv.ptr, alpha.ptr, nefc.ptr, done.ptr, cost.ptr, Jaref.ptr,
+              gauss.ptr, cost_out.ptr, prev_cost.ptr, grad_dot.ptr,
+              search_dot.ptr, changed_count.ptr, Jaref.shape[1],
+              Jaref.shape[0]) == 0

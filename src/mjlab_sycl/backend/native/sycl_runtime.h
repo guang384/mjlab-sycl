@@ -103,6 +103,19 @@ WP_SYCL_API int wp_sycl_hinc(const void* J, const void* D, const int* state,
                              const int* changed_ids, const int* changed_count,
                              void* h, long long nv_pad, long long efc_stride,
                              long long ids_stride, long long batch);
+// qfrc_constraint = efc_J^T @ force (bit-exact; see the .cpp).
+WP_SYCL_API int wp_sycl_qfrc_constraint(const void* J, const void* force,
+                                        const int* nefc,
+                                        const unsigned char* done, void* out,
+                                        long long nv, long long nv_pad,
+                                        long long njmax_pad, long long batch);
+// Fused linesearch_jaref + zero-ahead (bit-exact; see the .cpp).
+WP_SYCL_API int wp_sycl_jaref(const void* jv, const void* alpha, const int* nefc,
+                              const unsigned char* done, const void* cost,
+                              void* Jaref, void* gauss, void* cost_out,
+                              void* prev_cost, void* grad_dot, void* search_dot,
+                              void* changed_count, long long njmax,
+                              long long batch);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

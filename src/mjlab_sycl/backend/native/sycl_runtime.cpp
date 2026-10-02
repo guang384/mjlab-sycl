@@ -803,6 +803,110 @@ WP_SYCL_API int wp_sycl_hinc(const void* J, const void* D, const int* state,
     }
 }
 
+// ---- qfrc_constraint = efc_J^T @ force (bit-exact native rewrite) ----------
+//
+// One work-item per (world, dof) row-block: the per-dof dot over efc rows is
+// k-ascending inside one item (identical arithmetic), done worlds return.
+
+WP_SYCL_API int wp_sycl_qfrc_constraint(const void* J, const void* force,
+                                        const int* nefc,
+                                        const unsigned char* done, void* out,
+                                        long long nv, long long nv_pad,
+                                        long long njmax_pad, long long batch) {
+    if (batch <= 0 || nv <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_qfrc_constraint");
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                if (done[w]) return;
+                const int lane = static_cast<int>(it.get_local_linear_id());
+                const auto* Jw = static_cast<const float*>(J) +
+                    static_cast<size_t>(w) * njmax_pad * nv_pad;
+                const auto* fw = static_cast<const float*>(force) +
+                    static_cast<size_t>(w) * njmax_pad;
+                const int nef = nefc[w] < njmax_pad ? nefc[w] : (int)njmax_pad;
+                auto* ow = static_cast<float*>(out) +
+                    static_cast<size_t>(w) * nv_pad;
+                for (int dof = lane; dof < nv; dof += 32) {
+                    float s = 0.0f;
+                    for (int e = 0; e < nef; ++e) {
+                        s += Jw[static_cast<size_t>(e) * nv_pad + dof] * fw[e];
+                    }
+                    ow[dof] = s;
+                }
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_qfrc_constraint failed: %s\n", e.what());
+        return -1;
+    }
+}
+
+// ---- fused linesearch_jaref + zero-ahead (bit-exact native rewrite) --------
+//
+// The fused_solver._jaref_zeroahead contract, verbatim semantics: one
+// (world, row) work-item family. Item lane 0 per world does the zero-ahead
+// bookkeeping (changed_count zero for EVERY world including done ones --
+// memset semantics; the done-guarded rotate/zeros for live worlds), then
+// rows >= nefc return and live rows do Jaref += alpha * jv.
+
+WP_SYCL_API int wp_sycl_jaref(const void* jv, const void* alpha, const int* nefc,
+                              const unsigned char* done, const void* cost,
+                              void* Jaref, void* gauss, void* cost_out,
+                              void* prev_cost, void* grad_dot, void* search_dot,
+                              void* changed_count, long long njmax,
+                              long long batch) {
+    if (batch <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_jaref");
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                const int lane = static_cast<int>(it.get_local_linear_id());
+                const auto* jvw = static_cast<const float*>(jv) +
+                    static_cast<size_t>(w) * njmax;
+                const auto* Jw = static_cast<const float*>(Jaref) +
+                    static_cast<size_t>(w) * njmax;
+                auto* Jout = static_cast<float*>(Jaref) +
+                    static_cast<size_t>(w) * njmax;
+                const int nef = nefc[w];
+                const float alpha_w = static_cast<const float*>(alpha)[w];
+
+                if (lane == 0) {
+                    // changed_efc_count: memset semantics for EVERY world
+                    static_cast<int*>(changed_count)[w] = 0;
+                }
+                if (done[w]) return;
+
+                if (lane == 0) {
+                    static_cast<float*>(gauss)[w] = 0.0f;
+                    static_cast<float*>(prev_cost)[w] = static_cast<const float*>(cost)[w];
+                    static_cast<float*>(cost_out)[w] = 0.0f;
+                    static_cast<float*>(grad_dot)[w] = 0.0f;
+                    static_cast<float*>(search_dot)[w] = 0.0f;
+                }
+
+                for (int e = lane; e < njmax; e += 32) {
+                    if (e >= nef) return;
+                    Jout[e] = Jw[e] + alpha_w * jvw[e];
+                }
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_jaref failed: %s\n", e.what());
+        return -1;
+    }
+}
+
 // CRT helpers expected by generated kernel modules (declared in crt.h).
 // Host-side implementations; kernels that call these from device code are
 // not supported yet.

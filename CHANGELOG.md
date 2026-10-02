@@ -8,6 +8,16 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Native qfrc_constraint + fused jaref kernels** (`wp_sycl_qfrc_constraint`,
+  `wp_sycl_jaref`; kill switches `MJLAB_SYCL_NATIVE_QFRC` /
+  `MJLAB_SYCL_NATIVE_JAREF`): J^T @ force and the fused linesearch-jaref +
+  zero-ahead contract, re-implemented natively with bit-exact per-element
+  arithmetic (qfrc unit-verified at 0.0; jaref bit-exact except the
+  Jaref += alpha*jv FMA contraction, ULP 4.8e-7). Swapped-order paired A/B
+  at 4096 envs on a fully-quiet machine: 21,463/21,293 -> 22,060/21,800
+  env-steps/s (+2.4-2.8 %). All gates pass (patched stack 1.863e-08). The
+  seams live inside the existing interceptor launch branches (no new
+  function-level contracts).
 - **`test_patched` gate** (runs last in `mjlab-sycl-test`): physics check
   for the PATCHED stack on collision.xml (nv=12 -> small-nv chol, nefc=8,
   ncon=11, Newton + pyramidal -> incremental path) -- the other gates call
