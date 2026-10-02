@@ -250,13 +250,14 @@ Every kernel-schedule candidate has now been measured except T4:
 - **T3: parked** below the noise floor (<0.7 % bound by its kernel's own
   1.4 % share).
 - **T5: landed** (+8-11 %, default-on).
-- **T4 (ghost-iteration world compaction) is the only untested candidate**
-  — and the lesson of this list tempers its estimate: ~30 kernel schedules
-  per ghost iteration are already cheap (done-guarded, and now graph-
-  replayed, where an empty node costs far less than a full submit), so the
-  win is bounded by the ~3.7 ghost iterations' scheduling cost, likely
-  low single digits. Gate on profiling the graph-replay per-node cost
-  before building it.
+- **T4: measured dead before being built (2026-10-02).** The gating
+  measurement — a paired `MJLAB_SYCL_ITER` 8 vs 7 swapped-order A/B under
+  the substep graph — puts one full solver slot (~30 done-guarded,
+  graph-replayed kernel nodes) at ~0 % wall (both runs inside +-0.6 %
+  noise). Compaction's entire win was ~3.7 ghost slots, which now measure
+  free; and the ITER=6 knob's pre-graph -3.7 % re-measured at +1.4 %
+  (noise) for the same reason. The graph replay closed the door the
+  compaction design was meant to open.
 - Outside kernel schedules, the measured levers that remain are the
   thermal/session error bar itself (+-20 %, larger than every candidate
   here) and the ITER=6 knob (-3.7 %, pending policy-quality validation).
