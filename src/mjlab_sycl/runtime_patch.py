@@ -334,6 +334,54 @@ def _install_batched_polling() -> None:
   _sycl_loop.install_poll_batching()
 
 
+def _install_step_graph() -> None:
+  """Capture the whole mjwarp.step substep as one command graph.
+
+  Every kernel the substep submits (collision -> constraints -> solve ->
+  integrate) has static, buffer-sized grids, so after one plain count and
+  one verified record the entire substep replays as a single queue
+  submission -- the same amortization the solver batch got, extended to the
+  ~900 remaining per-kernel submits of each step. The solver batch graph
+  runs plain while the substep counts/records (graph_batch's scoped mode)
+  so the outer graph absorbs its kernels as nodes; nested replay inside a
+  recording would break the outer count-verification. Any non-static
+  launch sequence fails the count check and falls back to plain forever
+  (safe by construction). MJLAB_SYCL_GRAPH=0 disables together with the
+  solver-batch graphs.
+  """
+  import mujoco_warp as _mjw
+
+  from mjlab_sycl import graph_batch
+
+  if os.environ.get("MJLAB_SYCL_STEP_GRAPH", "1").strip().lower() in (
+      "0", "false", "off",
+  ):
+    return
+
+  orig_step = _mjw.step
+
+  def step_graphed(m, d, *args, **kwargs):
+    if graph_batch.run_sequence(
+        "mjwarp_step", lambda: orig_step(m, d, *args, **kwargs), ident=m,
+        scoped=True,
+    ):
+      # the substep ran (plain count, recorded, or replayed). On the plain
+      # count the internal poll drain already synced; on record/replay it
+      # was skipped (illegal during capture), so this boundary drain keeps
+      # the substep's host-read contract at exactly one sync per substep.
+      import warp as _wp
+
+      _wp.synchronize_device("sycl")
+      return
+    orig_step(m, d, *args, **kwargs)
+
+  _mjw.step = step_graphed
+  print(
+    "[sycl-step-graph] mjwarp.step captured as one command graph "
+    "(MJLAB_SYCL_GRAPH=0 to disable)"
+  )
+
+
 # The interceptor stack, in the one order that keeps every fusion live.
 # Layers wrap wp.launch (or re-point solver internals), so each layer only
 # sees what the rows above it left in place; the note on each row records
@@ -427,5 +475,15 @@ _INTERCEPTOR_LAYERS = (
         "solve, bit-identical physics (extra iterations are guarded no-ops "
         "via ctx.done). MJLAB_SYCL_POLL_EVERY=1 restores warp's original "
         "per-iteration polling.",
+    ),
+    (
+        _install_step_graph,
+        "Whole-substep command graph: mjwarp.step (collision -> constraints "
+        "-> solve -> integrate) replays as one queue submission after a "
+        "plain count and a verified record. Scoped mode forces the solver "
+        "batch graph plain while the substep establishes itself, so the "
+        "outer graph absorbs it and the launch counts match. Sits after "
+        "every launch wrapper so the recorded sequence is the final fused "
+        "one.",
     ),
 )

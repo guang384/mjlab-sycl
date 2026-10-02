@@ -43,6 +43,23 @@ _broken = False  # hard failure (missing DLL exports, runtime error)
 _MAX_RECAPTURES = 4
 _STATS = {"plain": 0, "recorded": 0, "replayed": 0, "fallback": 0, "disabled": 0}
 
+# Depth of the outer sequence currently establishing itself (UNSEEN count or
+# ARMED record). While > 0, every nested run_batch/run_sequence must run
+# PLAIN so its kernels become nodes of the outer graph: the outer count and
+# record runs then see the same launch sequence (a nested graph REPLAY would
+# submit zero launches and break the outer count-verification).
+_OUTER = 0
+
+# True while a graph record's fn is being captured (submissions are NOT
+# executing). Queue waits are illegal during capture, so code inside the
+# recorded region (loop_poll's convergence drain) checks this and skips
+# them; the captured sequence keeps its launch order either way.
+_RECORDING = False
+
+
+def recording_active() -> bool:
+    return _RECORDING
+
 
 def stats() -> dict:
     return dict(_STATS)
@@ -134,9 +151,11 @@ def _record_call(api, fn):
     Returns (handle, launch_count) on success.  handle is None means fn has
     NOT executed and the caller must fall back to a plain run.
     """
+    global _RECORDING
     h = api.wp_sycl_graph_begin()
     if not h:
         return None, -1
+    _RECORDING = True
     try:
         count = _counted_call(fn)
     except Exception:
@@ -146,6 +165,8 @@ def _record_call(api, fn):
         except Exception:
             pass
         raise
+    finally:
+        _RECORDING = False
     if api.wp_sycl_graph_end(h) != 0:
         # captured but never executed: discard and let the caller re-run
         api.wp_sycl_graph_free(h)
@@ -164,7 +185,7 @@ def _record(api, while_body, n, kwargs):
     return _record_call(api, run_all)
 
 
-def run_sequence(tag: str, fn, ident=None) -> bool:
+def run_sequence(tag: str, fn, ident=None, scoped: bool = False) -> bool:
     """Capture a static kernel sequence (e.g. lite forward) as one graph.
 
     Same three-state arming as run_batch: run once plain to count launches,
@@ -175,7 +196,25 @@ def run_sequence(tag: str, fn, ident=None) -> bool:
     (typically the model) keys liveness: a different object re-records.
     Returns True when the sequence already ran; False when the caller
     should just call fn() itself.
+
+    ``scoped=True`` marks a WHOLE-SUBSTEP sequence (e.g. mjwarp.step): while
+    it counts or records, nested graph users are forced plain (see _OUTER)
+    so the outer graph absorbs them; on replay the nested users are never
+    called at all.
     """
+    global _OUTER
+    if _broken or not _enabled() or _tape_active() or (_OUTER > 0 and not scoped):
+        return False
+    if scoped:
+        _OUTER += 1
+        try:
+            return _run_sequence(tag, fn, ident)
+        finally:
+            _OUTER -= 1
+    return _run_sequence(tag, fn, ident)
+
+
+def _run_sequence(tag: str, fn, ident) -> bool:
     global _broken
     if _broken or not _enabled() or _tape_active():
         return False
@@ -228,6 +267,10 @@ def run_batch(while_body, n, kwargs) -> bool:
     """
     global _broken
     if _broken or not _enabled() or n < 2 or _tape_active():
+        return False
+    if _OUTER > 0:
+        # an outer (substep-level) sequence is counting or recording: run
+        # plain so its kernels become nodes of the outer graph
         return False
 
     m = kwargs.get("m")

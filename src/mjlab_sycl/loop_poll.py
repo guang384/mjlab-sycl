@@ -96,8 +96,17 @@ def install_poll_batching() -> None:
     _run_batch(while_body, poll_every, kwargs)
 
     while True:
-      # drain so the raw USM read below observes all kernels submitted so far
-      wp.synchronize_device("sycl")
+      # drain so the raw USM read below observes all kernels submitted so
+      # far -- except while a command graph is being recorded around us
+      # (submissions are captured, not executing; a queue wait is illegal
+      # and pointless). With poll_every >= the iteration cap the poll's
+      # remaining count is always 0 anyway, so the skip cannot change the
+      # recorded launch sequence; the step-graph wrapper drains at the
+      # substep boundary instead.
+      from mjlab_sycl import graph_batch
+
+      if not graph_batch.recording_active():
+        wp.synchronize_device("sycl")
       remaining = _remaining(condition)
       if remaining <= 0:
         return

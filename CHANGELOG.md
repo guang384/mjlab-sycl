@@ -8,6 +8,19 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Whole-substep command graph** (`MJLAB_SYCL_STEP_GRAPH`, default-on;
+  `MJLAB_SYCL_GRAPH=0` still kills all graphs): `mjwarp.step` — collision,
+  constraints, solve, integrate — replays as ONE queue submission after a
+  plain count and a launch-count-verified record. Scoped mode runs the
+  solver batch graph plain while the substep establishes itself, so the
+  outer graph absorbs it (nested replays would break count verification);
+  the solver-end convergence poll drain is skipped during capture (queue
+  waits are illegal mid-recording; with poll_every >= the iteration cap the
+  poll count is constant, so the recorded sequence is unchanged) and the
+  step wrapper drains once at the substep boundary instead — still exactly
+  one sync per substep. Swapped-order paired A/B at 4096 envs: 13,552/13,834
+  -> 15,108/14,998 env-steps/s (+8-11 %); all verification gates pass with
+  physics-vs-cpu at 3.3e-06, unchanged.
 - `docs/optimization_ideas.md`: argued-but-unattempted kernel-level
   optimization candidates (oneMKL batched cholesky, sub_group LLT, jv
   row-block parallelism, whole-substep command graphs, efc-cost atomic

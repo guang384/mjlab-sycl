@@ -64,9 +64,10 @@ replay, measured 2026-09-30, 4096 envs):
 
 - median ≈ 210 ms/env.step (paired A/B: graph replay worth
   −35.0 ± 3.9 ms/step, 5 pairs, t = −20)
-- ~938 kernel launches/step, of which the solver's ~264-iteration batch
-  replays as ONE graph submission (4 graphs/step replace ~1,056
-  per-kernel submits)
+- ~938 kernel launches/step; since 2026-10-02 the whole substep
+  (collision -> constraints -> solve -> integrate) replays as ONE graph
+  submission (4/step) and the solver batch is absorbed inside it, so
+  per-kernel submits are down to a handful of non-graph launches per step
 - 7 queue drains/step: 4 solve-end convergence polls + lite forward +
   Bvh refit + sensor finalize; ~7 % of wall waiting in drains.  Call-site
   attribution (scripts/probe_drain_sites.py) shows exactly these four
@@ -124,6 +125,7 @@ default — kept for attribution):
 | flat-kernel v2: per-element JTDAJ dot, unrolled dense cholesky, LLT skip on unchanged constraints | serialized kernel time 435 -> 308 ms/step; env.step median ~330 -> ~270 ms | kept (same `MJLAB_SYCL_FLAT_JTDAJ` switch) |
 | solver scratch reuse (SolverContext/step_size_cost/nsolving across solves) | launch-cache hit rate 60 -> 81 %, slow rebuild path halved; +2-3 % throughput | kept (`MJLAB_SYCL_SOLVER_CTX`) |
 | command-graph batch replay (solver 8-iteration batch as one submission) | paired A/B −35.0 ± 3.9 ms/step (−12.7 %) | kept (`MJLAB_SYCL_GRAPH`) |
+| whole-substep command graph (`mjwarp.step` — collision -> constraints -> solve -> integrate — replays as one queue submission after a plain count and a verified record; scoped mode runs the solver batch plain while the substep establishes so the outer graph absorbs it and launch counts match; the poll drain is skipped during capture — queue waits are illegal there and the poll count is constant with poll_every >= cap — and the step wrapper drains once at the substep boundary instead, keeping one sync/substep) | swapped-order paired A/B 2026-10-02 @4096: 13,552/13,834 -> 15,108/14,998 env-steps/s (**+8-11 %**, 8.2 -> 7.5 s/iter); all gates pass, physics vs cpu 3.3e-06 unchanged | kept (default-on, `MJLAB_SYCL_STEP_GRAPH=0` kill switch; `MJLAB_SYCL_GRAPH=0` still kills every graph) |
 | iteration-kernel merges (prepare_gauss→prepare_quad, solve_done→search_update) | wall-neutral with graphs on (±4.5 ms), fewer kernels/launches | kept (same fusion switches) |
 | selective set_const recompute on resets (fall → randomize event) | recompute_constants 50 → 10 ms/step with active policies; +17 % end-to-end | kept, default-on (`MJLAB_SYCL_FUSED_SET_CONST`) |
 | torch thread sweep re-run under the new pipeline (2/4/8) | paired A/B: no significant wall difference | default 2 unchanged |
