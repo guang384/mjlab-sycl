@@ -69,6 +69,14 @@ All notable changes to mjlab-sycl.
   −35.0 ± 3.9 ms/step (−12.7%).
 
 ### Changed
+- `scripts/probe_kernel_times.py` now annotates its report with what
+  actually executed: the hook sits outside the fusion interceptors, so
+  fused executions were timed under pre-fusion names (times real, names
+  not). Active fusions are detected from the launch cache's key space and
+  each affected row carries an `[actually ...]` / `[suppressed ...]` note;
+  the docstring records that kernel-level attribution requires
+  `MJLAB_SYCL_GRAPH=0` (with the substep graph active, steady-state steps
+  replay without Python launch calls).
 - The 12 interceptor layers now install from a single auditable
   `_INTERCEPTOR_LAYERS` table in `runtime_patch` — one row per layer, each
   note recording why the row sits exactly there; the install sequence is
