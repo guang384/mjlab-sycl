@@ -14,12 +14,16 @@ clear remediation if the warp SYCL backend overlay is missing or drifted.
 from mjlab_sycl.test_overlay import main as overlay_main
 from mjlab_sycl.test_e2e import main as e2e_main
 from mjlab_sycl.test_mujoco import main as mujoco_main
+from mjlab_sycl.test_patched import main as patched_main
 
 
 def main() -> int:
   overlay_main()
   e2e_main()
   mujoco_main()
+  # LAST: test_patched installs the full runtime patch (the code the other
+  # gates deliberately stay clear of); it must not run before them
+  patched_main()
   return 0
 
 

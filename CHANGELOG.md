@@ -8,6 +8,17 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **`test_patched` gate** (runs last in `mjlab-sycl-test`): physics check
+  for the PATCHED stack on collision.xml (nv=12 -> small-nv chol, nefc=8,
+  ncon=11, Newton + pyramidal -> incremental path) -- the other gates call
+  mjw.step directly and exercise none of the runtime patch layers. Adds a
+  **wrapper-contract check**: function-level seams must replicate the
+  replaced function's full launch sequence (verified against the hinc
+  seam). Trajectory checks alone are NOT sufficient: measured with
+  collision.xml, a skipped gradient launch is trajectory-neutral (qpos
+  bit-identical) while dropping physics on other states -- the contract
+  check catches it and was demonstrated red with the bug reintroduced.
+  Native routes gain a device guard (non-sycl arrays fall back).
 - **Native set-const chol_fs + incremental Hessian hinc kernels**
   (`wp_sycl_chol_fs`, `wp_sycl_hinc`; kill switches `MJLAB_SYCL_NATIVE_CHOL`
   / `MJLAB_SYCL_NATIVE_HINC`): the set-const single-tile factorize+solve and

@@ -30,6 +30,15 @@ def _enabled(name: str) -> bool:
     )
 
 
+def _is_sycl(arr) -> bool:
+    """Device guard: the native kernels read raw pointers on the sycl
+    queue, so a non-sycl launch must never be routed to them."""
+    try:
+        return bool(arr.device.is_sycl)
+    except Exception:
+        return False
+
+
 def _api():
     """Resolve the DLL exports once; None means unavailable (stale DLL)."""
     global _fn_mv_jv, _fn_jtdaj, _fn_chol, _fn_chol_fs, _fn_hinc, _probed
@@ -80,6 +89,8 @@ def mv_jv(qM, J, search, nefc, done, mv, jv, nv: int, njmax: int,
     the solver's per-world bool array. Returns True when the batch ran."""
     if not _enabled("MJLAB_SYCL_NATIVE_MVJV"):
         return False
+    if not _is_sycl(qM):
+        return False
     fn = _api()
     if fn is None:
         return False
@@ -90,6 +101,8 @@ def mv_jv(qM, J, search, nefc, done, mv, jv, nv: int, njmax: int,
 def jtdaj(qM, J, D, state, nefc, done, h, nv_pad: int, njmax_pad: int) -> bool:
     """Native JTDAJ (h = qM + J^T D' J). Returns True when the batch ran."""
     if not _enabled("MJLAB_SYCL_NATIVE_JTDAJ"):
+        return False
+    if not _is_sycl(qM):
         return False
     _api()
     fn = _fn_jtdaj
@@ -106,6 +119,8 @@ def chol_solve(h, grad, done, changed, lvalid_in, L, lvalid_out, Mgrad,
     disabled/unavailable route (caller stays on the warp kernel)."""
     if not _enabled("MJLAB_SYCL_NATIVE_CHOL"):
         return False
+    if not _is_sycl(h):
+        return False
     _api()
     fn = _fn_chol
     if fn is None:
@@ -121,6 +136,8 @@ def chol_fs(M, y, x, L, adr, n: int, nv_pad: int) -> bool:
     Returns True when the batch ran."""
     if not _enabled("MJLAB_SYCL_NATIVE_CHOL"):
         return False
+    if not _is_sycl(M):
+        return False
     _api()
     fn = _fn_chol_fs
     if fn is None:
@@ -133,6 +150,8 @@ def hinc(J, D, state, changed_ids, changed_count, h, nv_pad: int,
     """Native incremental Hessian update over changed constraints.
     Returns True when the batch ran."""
     if not _enabled("MJLAB_SYCL_NATIVE_HINC"):
+        return False
+    if not _is_sycl(J):
         return False
     _api()
     fn = _fn_hinc
