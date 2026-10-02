@@ -111,8 +111,31 @@ layout equivalence.
 
 Possible in principle (4×4 register tiles), but any blocking that regroups
 the k-sums changes FP accumulation grouping (no longer bit-identical), and
-the effort rivals T1c with less certain gain. Only worth it if both T1d and
-T1c fail.
+the effort rivals T1c with less certain gain. Moot: T1c is now measured
+dead too.
+
+### T1c — native sub_group-cooperative LLT in the backend — **measured dead end (2026-10-02)**
+
+Implemented natively in `warpsycl.dll` (`wp_sycl_sg_chol_solve`), correctness
+gated at ULP level vs numpy (1.7e-07 L / 3.8e-07 x), two schedule variants:
+
+- v1: 16-lane sub-group per world, column-oriented bit-exact factorization
+  against USM with global-fence barriers — 2.28 ms/call @4096.
+- v2: same schedule staged through SLM with local-space barriers (cheap
+  intra-thread sync on Xe2, where a 16-lane group is one hardware thread) —
+  2.16 ms/call.
+
+Both ~2x SLOWER than the flat scalar kernel's ~1.0 ms. The lesson is
+structural: LLT's dependency chain forces ~n sequential column steps with a
+group-wide sync between them; at n=20 each step leaves ~10 MACs per lane —
+a ~10:1 sync:work ratio — while the flat kernel's zero-sync, fully-unrolled,
+one-item-per-world schedule already hides latency across 4096 independent
+items. Intra-world parallelism cannot beat it at this matrix size; the chol
+family's ~1.0 ms is its floor. Both variants reverted; the column-oriented
+bit-exact schedule and the SLM staging pattern are recorded here for any
+future larger-n model (n > 64), where this schedule amortizes.
+
+With T1d and T1c measured, the cholesky family is closed.
 
 ## T2 — un-serialize `_mv_jv_fused` (row-block parallelism) — **measured dead end (2026-10-02)**
 
@@ -217,21 +240,26 @@ kernel, or as a rider on other work in the same files.
 - **fp16/bf16 J or h**: same objection, stronger (3 decimal digits).
 - **`max_unroll` sweep**: measured dead end (table above).
 
-## Suggested order
+## Where this leaves the list (2026-10-02 status)
 
-1. **T1c** (sub_group LLT) — the chol family's live path after T1d's
-   measured death; the DLL/ctypes seam it needs is already proven. The
-   largest remaining fish: ~18 % of device time, latency-bound.
-2. **T4** (compaction) — second; the biggest and only genuinely intricate
-   one. Gate on T1c's outcome.
-3. **T3** (efc atomics) — parked: bounded <0.7 % by the kernel's own 1.4 %
-   share; revisit only with atomic-stall evidence or as a rider.
+Every kernel-schedule candidate has now been measured except T4:
 
-(Bandwidth-bound corollary from T2's measurement: any candidate whose win
-depends on re-reading the same bytes faster is dead on arrival on this
-iGPU; the viable families are latency-bound compute (chol), submission
-overhead (T5, landed 2026-10-02: +8-11 %), and sync/atomic costs (T3,
-now known to be <0.7 %).)
+- **T1d / T1c / T2: measured dead** (vendor library, intra-world parallel
+  LLT, jv rescheduling). The chol family's ~1.0 ms is its floor at n=20;
+  the jv family is bandwidth-bound.
+- **T3: parked** below the noise floor (<0.7 % bound by its kernel's own
+  1.4 % share).
+- **T5: landed** (+8-11 %, default-on).
+- **T4 (ghost-iteration world compaction) is the only untested candidate**
+  — and the lesson of this list tempers its estimate: ~30 kernel schedules
+  per ghost iteration are already cheap (done-guarded, and now graph-
+  replayed, where an empty node costs far less than a full submit), so the
+  win is bounded by the ~3.7 ghost iterations' scheduling cost, likely
+  low single digits. Gate on profiling the graph-replay per-node cost
+  before building it.
+- Outside kernel schedules, the measured levers that remain are the
+  thermal/session error bar itself (+-20 %, larger than every candidate
+  here) and the ITER=6 knob (-3.7 %, pending policy-quality validation).
 
 Every step gates through `mjlab-sycl-test` plus a paired bench A/B
 (`performance.md` reproduce block), and lands default-off behind its own
