@@ -114,23 +114,18 @@ the k-sums changes FP accumulation grouping (no longer bit-identical), and
 the effort rivals T1c with less certain gain. Only worth it if both T1d and
 T1c fail.
 
-## T2 — un-serialize `_mv_jv_fused` (row-block parallelism)
+## T2 — un-serialize `_mv_jv_fused` (row-block parallelism) — **measured dead end (2026-10-02)**
 
-- **Mechanism.** The mv+jv fusion (1 launch, 1 work-item/world doing ~1.3k
-  serial MACs) was a **launch-count** optimization. Under solver graph replay
-  the launch overhead is already amortized, so the trade-off has flipped:
-  give the work back its parallelism — grid `(nworld, row_blocks)` with each
-  item computing a block of jv rows (`J[row,:] · search`, k-ascending) and
-  one item family for mv.
-- **Feasibility.** Pure warp language, replaces `_mv_jv_fused` inside the
-  existing `fused_linesearch` interceptor; dims stay static (njmax-based), so
-  graph replay and the launch cache re-key once and continue.
-- **Safety.** Kill switch already exists (`MJLAB_SYCL_FUSED_LINESEARCH=0`
-  restores upstream). No new state, no cross-item dependencies.
-- **Numerics.** Bit-identical by construction: every output element remains
-  a single sequential dot in one work-item; only the grid changes.
-- **Expected gain (estimate).** 2–3× on jv/mv (0.47–0.77 ms × 8–16/step) →
-  **~2–4 % end-to-end**. Effort: ≤1 day including A/B.
+Implemented both variants (row-per-item over `(nworld, nv + njmax)`, and
+4-rows/item with independent accumulator chains for ILP; arithmetic per
+element unchanged → bit-identical by construction) and measured a wash:
+0.56 / 0.59 ms/launch vs the original's 0.47–0.77. The kernel is
+**memory-bandwidth bound**, not schedule bound: ~21 MB actually read per
+launch (the nefc rows of `efc_J` plus `qM`) over ~0.5 ms ≈ 43 GB/s on the
+LPDDR5X bus, and 4096 worlds already provide more item parallelism than the
+device can use. Fully reverted; the lever for this family is reading fewer
+bytes (fusing more consumers per J read), not rescheduling. Verdict in
+`performance.md`'s attempts table.
 
 ## T5 — extend command-graph capture to the whole substep
 
@@ -219,12 +214,16 @@ T1c fail.
 
 ## Suggested order
 
-1. **T2** (jv row-block) — ≤1 d, bit-identical.
-2. **T5** (substep graphs) — safe-by-construction arming, 1–2 d.
-3. **T3** (efc atomics) — ~1 d, deterministic-order bonus.
-4. **T1c** (sub_group LLT) — the chol family's live path after T1d's
+1. **T5** (substep graphs) — safe-by-construction arming, 1–2 d.
+2. **T3** (efc atomics) — ~1 d, deterministic-order bonus.
+3. **T1c** (sub_group LLT) — the chol family's live path after T1d's
    measured death; the DLL/ctypes seam it needs is already proven.
-5. **T4** (compaction) — last; the biggest and only genuinely intricate one.
+4. **T4** (compaction) — last; the biggest and only genuinely intricate one.
+
+(Bandwidth-bound corollary from T2's measurement: any candidate whose win
+depends on re-reading the same bytes faster is dead on arrival on this
+iGPU; the viable families are latency-bound compute (chol), submission
+overhead (T5), and sync/atomic costs (T3).)
 
 Every step gates through `mjlab-sycl-test` plus a paired bench A/B
 (`performance.md` reproduce block), and lands default-off behind its own
