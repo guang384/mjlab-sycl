@@ -85,8 +85,9 @@ mjlab 技术栈原样搬到 Intel iGPU/Arc 上训练，**不改你项目的任�
 
 ## 性能
 
-Intel Arc 130T（Lunar Lake 核显）、microduck velocity 任务、4096 环境：安静桌面
-端到端 **~22k env-steps/s（约 5.5 秒/迭代）**，同栈 warp-cpu 设备约 258。所有实测
+Intel Arc 130T（Lunar Lake 核显）、microduck velocity 任务、4096 环境：
+端到端 **~19–22k env-steps/s（约 5.5–6.5 秒/迭代）**，同栈 warp-cpu 设备约 258
+（会话/GPU 状态带来 ±20% 方差——比较性能请用同一会话内的配对测试）。所有实测
 数据、误差条与每项优化的结论见 [`docs/performance.md`](docs/performance.md)。
 
 ## 可视化工具

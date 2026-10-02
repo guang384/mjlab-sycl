@@ -77,8 +77,9 @@ and known limitations: **[README-SYCL-TRAINING.md](README-SYCL-TRAINING.md)**
 ## Measured performance
 
 Intel Arc 130T (Lunar Lake iGPU), microduck velocity task, 4096 envs:
-**~22k env-steps/s (~5.5 s/iteration) on a quiet desktop** end-to-end, vs
-~258 on the same stack's warp-cpu device. All measurements, their error
+**~19–22k env-steps/s (~5.5–6.5 s/iteration)** end-to-end, vs ~258 on the
+same stack's warp-cpu device (session/GPU-state variance is ±20 % —
+always compare paired runs on the same session). All measurements, their error
 bars and every optimization's verdict live in
 [`docs/performance.md`](docs/performance.md) — the single source for
 numbers. A background GPU app costs 10–45 % of throughput; the train/bench
