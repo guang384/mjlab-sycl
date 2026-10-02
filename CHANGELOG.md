@@ -8,6 +8,15 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Native JTDAJ kernel** (`wp_sycl_jtdaj`, `MJLAB_SYCL_NATIVE_JTDAJ=0` to
+  disable): the Hessian update h = qM + J^T D' J re-implemented as a native
+  SYCL kernel -- 32-lane row-block schedule, bit-exact per-element
+  k-ascending dots with the same Dk-zeroing rules (unit-verified
+  bit-identical incl. non-QUADRATIC states, done worlds, nefc edges).
+  Swapped-order paired A/B at 4096 envs on a quiet desktop:
+  17,697/17,351 -> 18,491/18,279 env-steps/s (+4.5-5.4 %); gates pass with
+  physics-vs-cpu at 3.308e-06 unchanged. Second harvest of the measured
+  DPC++-vs-warp codegen gap.
 - **Native mv+jv kernel** (`native_kernels.py` + `wp_sycl_mv_jv` in
   warpsycl.dll, `MJLAB_SYCL_NATIVE_MVJV=0` to disable): the linesearch's
   fused mv+jv launch re-implemented as a native SYCL kernel -- 32-lane

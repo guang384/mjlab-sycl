@@ -523,6 +523,66 @@ int wp_sycl_mv_jv(const void* qM, const void* J, const void* search,
     }
 }
 
+// ---- JTDAJ: h = qM + J^T D' J (bit-exact native rewrite) -------------------
+//
+// One output element (i, j) of h per work-item, dot over constraints
+// k-ascending with the same zeroing rules as the warp kernel (Dk forced to
+// zero for non-QUADRATIC states, zero Dk skipped) -- identical arithmetic,
+// bit-exact by construction. 32-lane row-block schedule: adjacent items
+// cover adjacent columns of the same h row, so their per-k J loads share
+// cache lines, and Dk/state reads broadcast through L1. Rows at and beyond
+// nefc are skipped; done worlds return entirely (dead stores downstream).
+
+int wp_sycl_jtdaj(const void* qM, const void* J, const void* D,
+                  const int* state, const int* nefc,
+                  const unsigned char* done, void* h,
+                  long long nv_pad, long long njmax_pad, long long batch) {
+    if (batch <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_jtdaj");
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                if (done[w]) return;
+                const int lane = static_cast<int>(it.get_local_linear_id());
+                const int elems = static_cast<int>(nv_pad * nv_pad);
+                const auto* qMw = static_cast<const float*>(qM) +
+                    static_cast<size_t>(w) * nv_pad * nv_pad;
+                const auto* Jw = static_cast<const float*>(J) +
+                    static_cast<size_t>(w) * njmax_pad * nv_pad;
+                const auto* Dw = static_cast<const float*>(D) +
+                    static_cast<size_t>(w) * njmax_pad;
+                const auto* stw = state + static_cast<size_t>(w) * njmax_pad;
+                const int nef = nefc[w];
+                auto* hw = static_cast<float*>(h) +
+                    static_cast<size_t>(w) * nv_pad * nv_pad;
+                constexpr int kQuadratic = 1;  // mjCNSTRSTATE_QUADRATIC
+
+                for (int e = lane; e < elems; e += 32) {
+                    const int i = e / static_cast<int>(nv_pad);
+                    const int j = e - i * static_cast<int>(nv_pad);
+                    float s = qMw[e];
+                    for (int k = 0; k < nef; ++k) {
+                        float Dk = Dw[k];
+                        if (stw[k] != kQuadratic) Dk = 0.0f;
+                        if (Dk == 0.0f) continue;
+                        s += (Jw[static_cast<size_t>(k) * nv_pad + i] * Dk) *
+                             Jw[static_cast<size_t>(k) * nv_pad + j];
+                    }
+                    hw[e] = s;
+                }
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_jtdaj failed: %s\n", e.what());
+        return -1;
+    }
+}
+
 // CRT helpers expected by generated kernel modules (declared in crt.h).
 // Host-side implementations; kernels that call these from device code are
 // not supported yet.

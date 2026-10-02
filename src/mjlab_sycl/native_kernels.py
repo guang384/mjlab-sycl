@@ -17,6 +17,7 @@ import ctypes
 import os
 
 _fn_mv_jv = None
+_fn_jtdaj = None
 _probed = False
 
 
@@ -28,7 +29,7 @@ def _enabled(name: str) -> bool:
 
 def _api():
     """Resolve the DLL exports once; None means unavailable (stale DLL)."""
-    global _fn_mv_jv, _probed
+    global _fn_mv_jv, _fn_jtdaj, _probed
     if _probed:
         return _fn_mv_jv
     _probed = True
@@ -40,6 +41,13 @@ def _api():
         fn.restype = ctypes.c_int
         fn.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_longlong] * 5
         _fn_mv_jv = fn
+        try:
+            fj = dll.wp_sycl_jtdaj
+            fj.restype = ctypes.c_int
+            fj.argtypes = [ctypes.c_void_p] * 7 + [ctypes.c_longlong] * 3
+            _fn_jtdaj = fj
+        except AttributeError:
+            _fn_jtdaj = None
     except Exception:
         _fn_mv_jv = None
     return _fn_mv_jv
@@ -56,3 +64,15 @@ def mv_jv(qM, J, search, nefc, done, mv, jv, nv: int, njmax: int,
         return False
     return fn(qM.ptr, J.ptr, search.ptr, nefc.ptr, done.ptr, mv.ptr, jv.ptr,
               nv, njmax, nv_pad, njmax_pad, qM.shape[0]) == 0
+
+
+def jtdaj(qM, J, D, state, nefc, done, h, nv_pad: int, njmax_pad: int) -> bool:
+    """Native JTDAJ (h = qM + J^T D' J). Returns True when the batch ran."""
+    if not _enabled("MJLAB_SYCL_NATIVE_JTDAJ"):
+        return False
+    _api()
+    fn = _fn_jtdaj
+    if fn is None:
+        return False
+    return fn(qM.ptr, J.ptr, D.ptr, state.ptr, nefc.ptr, done.ptr, h.ptr,
+              nv_pad, njmax_pad, qM.shape[0]) == 0

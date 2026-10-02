@@ -269,6 +269,13 @@ def install() -> None:
       nworld = kwargs["dim"]
       if isinstance(nworld, (tuple, list)):
         nworld = nworld[0]
+      from mjlab_sycl import native_kernels
+
+      if native_kernels.jtdaj(
+          qM, inputs[2], inputs[3], inputs[4], inputs[0], inputs[5],
+          outputs[0], nv_pad, inputs[2].shape[1],
+      ):
+        return  # the native kernel ran; suppress the warp launch
       return wp.launch(
         _get_kernel(nv_pad),
         dim=(nworld, nv_pad * nv_pad),
