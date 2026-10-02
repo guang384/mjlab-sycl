@@ -69,6 +69,14 @@ WP_SYCL_API void* wp_sycl_graph_begin();
 WP_SYCL_API int wp_sycl_graph_end(void* handle);
 WP_SYCL_API int wp_sycl_graph_submit(void* handle);
 WP_SYCL_API void wp_sycl_graph_free(void* handle);
+// Fused mv = qM @ search + jv = efc_J @ search over `batch` worlds
+// (see the .cpp): bit-exact row-block native rewrite of the warp fused
+// kernel. Returns 0 on success; non-zero = caller falls back.
+WP_SYCL_API int wp_sycl_mv_jv(const void* qM, const void* J,
+                              const void* search, const int* nefc,
+                              const unsigned char* done, void* mv, void* jv,
+                              long long nv, long long njmax, long long nv_pad,
+                              long long njmax_pad, long long batch);
 // Block until every submitted kernel on the shared queue has completed.
 WP_SYCL_API void wp_sycl_synchronize();
 // Record the name of the kernel about to be submitted (called at the top of

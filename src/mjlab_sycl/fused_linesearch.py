@@ -316,6 +316,14 @@ def _intercept_launch(kernel, dim, inputs=(), outputs=(), *args, **kwargs):
         # mv_in = [qM, search]  mv_out = [mv]
         # jv inputs = [nefc, J_rownnz, J_rowadr, J_colind, J, search, done]
         # jv outputs = [jv]
+        from mjlab_sycl import native_kernels
+
+        if native_kernels.mv_jv(
+            mv_in[0], inputs[4], mv_in[1], d.nefc, _CTX.done,
+            mv_out[0], outputs[0] if outputs else _CTX.jv,
+            m.nv, d.njmax, m.nv_pad, d.njmax_pad,
+        ):
+          return None  # the native kernel ran; suppress the warp launch
         return _prev_launch(
           _mv_jv_fused,
           dim=d.nworld,

@@ -457,6 +457,72 @@ void wp_sycl_graph_free(void* handle) {
     delete g;
 }
 
+// ---- fused mv + jv for the solver linesearch (bit-exact native rewrite) ----
+//
+// Replaces the warp-language one-work-item-per-world fused kernel: mv =
+// qM @ search (nv rows) and jv = efc_J @ search (min(njmax, nefc) rows).
+// Row-block schedule: a 32-lane group per world, each item owning rows
+// l, l+32, ... -- every output element stays ONE item's k-ascending dot
+// (identical arithmetic to the warp kernel, bit-exact by construction),
+// while the 32x item fan-out and DPC++ codegen (measured ~70 GB/s on
+// shared USM vs warp's ~59) attack the kernel's latency bound. Rows at
+// and beyond nefc are skipped, so no bytes are read for idle rows.
+// qM/efc_J/search are read-only; mv/jv are written only below.
+
+int wp_sycl_mv_jv(const void* qM, const void* J, const void* search,
+                  const int* nefc, const unsigned char* done, void* mv,
+                  void* jv, long long nv, long long njmax, long long nv_pad,
+                  long long njmax_pad, long long batch) {
+    if (batch <= 0) return 0;
+    try {
+        sycl::queue& q = the_queue();
+        g_last_kernel.store("wp_sycl_mv_jv");
+        q.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(static_cast<size_t>(batch) * 32),
+                sycl::range<1>(32)),
+            [=](sycl::nd_item<1> it) {
+                const int w = static_cast<int>(it.get_group_linear_id());
+                // done worlds skip entirely -- the warp kernel's early return
+                // is what makes converged ghost iterations nearly free, and
+                // their mv/jv are dead stores (every consumer done-guards)
+                if (done[w]) return;
+                const int lane = static_cast<int>(it.get_local_linear_id());
+                const int rows_total = static_cast<int>(nv + njmax);
+                const auto* qMw = static_cast<const float*>(qM) +
+                    static_cast<size_t>(w) * nv_pad * nv_pad;
+                const auto* Jw = static_cast<const float*>(J) +
+                    static_cast<size_t>(w) * njmax_pad * nv_pad;
+                const auto* sw = static_cast<const float*>(search) +
+                    static_cast<size_t>(w) * nv_pad;
+                const int nef = static_cast<int>(nefc[w]);
+                auto* mvw = static_cast<float*>(mv) + static_cast<size_t>(w) * nv_pad;
+                auto* jvw = static_cast<float*>(jv) + static_cast<size_t>(w) * njmax;
+
+                for (int r = lane; r < rows_total; r += 32) {
+                    if (r < nv) {
+                        // mv row: qM[r, :] @ search, k-ascending in this item
+                        const auto* row = qMw + static_cast<size_t>(r) * nv_pad;
+                        float s = 0.0f;
+                        for (int i = 0; i < nv; ++i) s += row[i] * sw[i];
+                        mvw[r] = s;
+                    } else {
+                        const int e = r - nv;
+                        if (e >= nef || e >= njmax) continue;
+                        const auto* row = Jw + static_cast<size_t>(e) * nv_pad;
+                        float s = 0.0f;
+                        for (int i = 0; i < nv; ++i) s += row[i] * sw[i];
+                        jvw[e] = s;
+                    }
+                }
+            });
+        return 0;
+    } catch (std::exception const& e) {
+        std::fprintf(stderr, "wp_sycl_mv_jv failed: %s\n", e.what());
+        return -1;
+    }
+}
+
 // CRT helpers expected by generated kernel modules (declared in crt.h).
 // Host-side implementations; kernels that call these from device code are
 // not supported yet.

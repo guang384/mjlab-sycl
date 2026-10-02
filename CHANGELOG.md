@@ -8,6 +8,15 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Native mv+jv kernel** (`native_kernels.py` + `wp_sycl_mv_jv` in
+  warpsycl.dll, `MJLAB_SYCL_NATIVE_MVJV=0` to disable): the linesearch's
+  fused mv+jv launch re-implemented as a native SYCL kernel -- 32-lane
+  row-block schedule, bit-exact per-element k-ascending dots (unit-verified
+  bit-identical to the warp kernel), done-guarded. Kernel 2.5x faster
+  (0.62 -> 0.25 ms/launch); swapped-order paired A/B at 4096 envs:
+  14,777/14,719 -> 15,493/15,216 env-steps/s (+3.4-4.8 %); all gates pass
+  with physics-vs-cpu at 3.308e-06, unchanged. First harvest of the
+  DPC++-vs-warp codegen gap measured in docs/optimization_ideas.md.
 - **Whole-substep command graph** (`MJLAB_SYCL_STEP_GRAPH`, default-on;
   `MJLAB_SYCL_GRAPH=0` still kills all graphs): `mjwarp.step` — collision,
   constraints, solve, integrate — replays as ONE queue submission after a
