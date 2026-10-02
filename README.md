@@ -46,7 +46,8 @@ What it bundles:
 <project>\.venv\Scripts\python.exe -m pip install "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu
 ```
 
-Then train any registered task:
+Then train any registered task (task names come from your mjlab
+project's registry — `mjlab-sycl-train --list-tasks` lists them):
 
 ```powershell
 # smoke test first (64 envs, 5 iterations)

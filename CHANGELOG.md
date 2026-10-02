@@ -8,6 +8,10 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- `mjlab-sycl-train --list-tasks`: list the task names registered in
+  the venv; unknown or missing task names now fail fast with
+  did-you-mean suggestions and the listing hint (was a raw KeyError
+  from the registry after the full device setup).
 - `RELEASING.md`: maintainer release checklist (version bump ->
   changelog fold -> wheel build + contents check -> gate smoke ->
   tag -> GitHub release), validated end to end against a locally

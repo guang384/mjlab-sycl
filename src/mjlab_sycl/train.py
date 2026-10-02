@@ -31,7 +31,9 @@ from mjlab_sycl.runtime_patch import patch_simulation_for_sycl  # noqa: E402
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("task")
+  parser.add_argument("task", nargs="?",
+                      help="task name from the venv's mjlab registry "
+                           "(see --list-tasks)")
   parser.add_argument("--num-envs", type=int, default=1024)
   parser.add_argument("--max-iterations", type=int, default=1000)
   parser.add_argument("--save-interval", type=int, default=200)
@@ -41,7 +43,38 @@ def main() -> None:
   parser.add_argument("--seed", type=int, default=None)
   parser.add_argument("--ppo-device", default=None,
                       help="torch device for PPO (default: xpu if available, else cpu)")
+  parser.add_argument("--list-tasks", action="store_true",
+                      help="list the task names registered in this venv and exit")
   args = parser.parse_args()
+
+  # fail fast on task-name problems BEFORE the device setup -- task names
+  # come from the venv's mjlab task registry (e.g. microduck_rl's
+  # src/mjlab_microduck/tasks/__init__.py register_mjlab_task calls)
+  import difflib
+
+  from mjlab.tasks import registry as _registry
+
+  task_names = sorted(_registry.list_tasks())
+  if args.list_tasks:
+    print(f"{len(task_names)} registered tasks in this venv:")
+    for name in task_names:
+      print(f"  {name}")
+    return
+  if not args.task:
+    print("[train-sycl] missing task name; registered in this venv:", flush=True)
+    for name in task_names:
+      print(f"  {name}")
+    raise SystemExit(1)
+  if args.task not in task_names:
+    print(f"[train-sycl] unknown task: {args.task!r}", flush=True)
+    close = difflib.get_close_matches(args.task, task_names, n=5, cutoff=0.35)
+    if close:
+      print("  did you mean: " + ", ".join(close), flush=True)
+    print(f"  {len(task_names)} tasks are registered in this venv "
+          "(names come from the task package, e.g. microduck_rl's "
+          "tasks/__init__.py); list them with:", flush=True)
+    print("    mjlab-sycl-train --list-tasks", flush=True)
+    raise SystemExit(1)
 
   # physics is bus-bound: a background GPU app costs 10-45% of throughput
   # (docs/performance.md) -- warn before hours go into a contended run
