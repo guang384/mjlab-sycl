@@ -148,29 +148,34 @@ bytes (fusing more consumers per J read), not rescheduling. Verdict in
 - **Expected gain (estimate).** submit share 8 % → ~2 % → **3–6 %
   end-to-end**, plus reduced host contention. Effort: 1–2 days.
 
-## T3 — eliminate `update_constraint_efc` cost atomics
+## T3 — eliminate `update_constraint_efc` cost atomics — **downgraded below the noise floor (2026-10-02)**
 
-- **Mechanism.** Each world's ~46 efc rows `atomic_add` their cost
-  contribution onto the same `ctx_cost[worldid]` address. Replace with
-  per-row partial stores into a scratch `(nworld, njmax)` buffer and fold the
-  reduction into the immediately-following `(nworld, 1)` `gauss_cost` kernel
-  (one less launch, too). Needs a sycl rewrite of these two upstream kernels
-  — the same copy-and-own pattern already used throughout.
-- **Feasibility.** Both kernels are small and already understood; seam is the
-  existing launch interceptor; scratch rides `SolverContext` (solver_ctx
-  reuse keeps graph/cache keys stable).
-- **Safety.** Kill switch; falls back to the upstream pair. Contention today
-  is same-address same-world only — the rewrite removes it, it does not
-  move it.
-- **Numerics.** Today's atomic sum order is **non-deterministic run-to-run**;
-  a fixed ascending-row reduction is strictly more reproducible. Differences
-  vs any particular atomic interleaving are ULP-level. One honest edge: a
-  ULP change can flip a borderline `solve_done` tolerance comparison for an
-  individual world (iteration count differs) — physically equivalent, but
-  validate with the physics gate + a paired training A/B, not just unit
-  equality.
-- **Expected gain (estimate).** 0.43 ms × ~9/step partially → **1–3 %
-  end-to-end**. Effort: ~1 day.
+Fresh arithmetic from the 2026-10-02 kernel ranking: the whole kernel costs
+0.43 ms x ~9/step = 3.9 ms/step = **1.4 % of the 273 ms step** — and the
+atomics are only part of it (each row also does the elliptic-cone zone
+math, per-row state writes, change tracking). Even eliminating every atomic
+stall outright bounds the win at <0.7 % end-to-end, under the session noise
+bar; the original 1–3 % estimate over-weighted the atomic share. The
+rewrite itself (per-row partial stores + folding the reduction into the
+`(nworld, 1)` gauss_cost kernel, both kernel copies owned) stays sound —
+mechanism, safety and numerics notes below stand — but it only becomes
+worth attempting if a future profile shows atomic stalls dominating the
+kernel, or as a rider on other work in the same files.
+
+- **Mechanism (when attempted).** Replace each of the five
+  `atomic_add(ctx_cost_out, worldid, ...)` sites with a per-row store into
+  a `(nworld, njmax)` partial buffer; the immediately-following
+  `(nworld, 1)` `gauss_cost` kernel computes
+  `cost = 0.5*gauss + sum(partial[:nefc])` instead of `+=` (its
+  single-work-item-per-world shape already reads/writes cost non-atomically).
+  `changed_ids/changed_count` atomics stay (no same-address contention).
+- **Safety.** Kill switch; interceptor seam identical to the other fusions;
+  scratch rides SolverContext (stable cache/graph keys).
+- **Numerics.** A fixed ascending-row reduction is strictly MORE
+  reproducible than today's run-to-run atomic order (ULP-level differences
+  either way; a ULP flip can still move an individual world's borderline
+  `solve_done` comparison — physically equivalent, validate via the physics
+  gate + paired training A/B, not unit equality alone).
 
 ## T4 — ghost-iteration world compaction
 
@@ -214,16 +219,19 @@ bytes (fusing more consumers per J read), not rescheduling. Verdict in
 
 ## Suggested order
 
-1. **T5** (substep graphs) — safe-by-construction arming, 1–2 d.
-2. **T3** (efc atomics) — ~1 d, deterministic-order bonus.
-3. **T1c** (sub_group LLT) — the chol family's live path after T1d's
-   measured death; the DLL/ctypes seam it needs is already proven.
-4. **T4** (compaction) — last; the biggest and only genuinely intricate one.
+1. **T1c** (sub_group LLT) — the chol family's live path after T1d's
+   measured death; the DLL/ctypes seam it needs is already proven. The
+   largest remaining fish: ~18 % of device time, latency-bound.
+2. **T4** (compaction) — second; the biggest and only genuinely intricate
+   one. Gate on T1c's outcome.
+3. **T3** (efc atomics) — parked: bounded <0.7 % by the kernel's own 1.4 %
+   share; revisit only with atomic-stall evidence or as a rider.
 
 (Bandwidth-bound corollary from T2's measurement: any candidate whose win
 depends on re-reading the same bytes faster is dead on arrival on this
 iGPU; the viable families are latency-bound compute (chol), submission
-overhead (T5), and sync/atomic costs (T3).)
+overhead (T5, landed 2026-10-02: +8-11 %), and sync/atomic costs (T3,
+now known to be <0.7 %).)
 
 Every step gates through `mjlab-sycl-test` plus a paired bench A/B
 (`performance.md` reproduce block), and lands default-off behind its own
