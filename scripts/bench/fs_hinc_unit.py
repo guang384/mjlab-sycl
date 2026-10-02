@@ -20,7 +20,7 @@ from mjlab_sycl.flat_kernels import _get_chol_fs_kernel
 ADR = wp.array(np.array([0], dtype=np.int32), dtype=int, device="sycl")
 wp.launch(_get_chol_fs_kernel(N), dim=(NW, 1), inputs=[Mw, Yw, ADR], outputs=[X1, L1], device="sycl")
 from mjlab_sycl import native_kernels
-rc = native_kernels.chol_fs(Mw, Yw, X2, L2, N, PAD)
+rc = native_kernels.chol_fs(Mw, Yw, X2, L2, ADR, N, PAD)
 wp.synchronize_device("sycl")
 print("chol_fs rc:", rc, " X equal:", np.array_equal(X1.numpy(), X2.numpy(), equal_nan=True),
       " L equal:", np.array_equal(L1.numpy(), L2.numpy(), equal_nan=True))

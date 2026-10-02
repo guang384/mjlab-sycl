@@ -96,8 +96,8 @@ WP_SYCL_API int wp_sycl_chol_solve(const void* h, const void* grad,
                                    long long batch);
 // Set-const cholesky factorize+solve, single-tile case (see the .cpp).
 WP_SYCL_API int wp_sycl_chol_fs(const void* M, const void* y, void* x,
-                                void* L, long long n, long long stride,
-                                long long batch);
+                                void* L, const int* adr, long long n,
+                                long long stride, long long batch);
 // Incremental Hessian update over changed constraints (bit-exact rewrite).
 WP_SYCL_API int wp_sycl_hinc(const void* J, const void* D, const int* state,
                              const int* changed_ids, const int* changed_count,

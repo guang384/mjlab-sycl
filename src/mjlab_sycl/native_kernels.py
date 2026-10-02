@@ -60,7 +60,7 @@ def _api():
             _fn_chol = None
         fs = getattr(dll, "wp_sycl_chol_fs")
         fs.restype = ctypes.c_int
-        fs.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_longlong] * 3
+        fs.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_longlong] * 3
         _fn_chol_fs = fs
         try:
             fx = dll.wp_sycl_hinc
@@ -114,8 +114,10 @@ def chol_solve(h, grad, done, changed, lvalid_in, L, lvalid_out, Mgrad,
               lvalid_out.ptr, Mgrad.ptr, n, nv_pad, h.shape[0]) == 0
 
 
-def chol_fs(M, y, x, L, n: int, nv_pad: int) -> bool:
+def chol_fs(M, y, x, L, adr, n: int, nv_pad: int) -> bool:
     """Native set-const cholesky factorize+solve (single-tile case).
+    The tile anchor is read device-side from ``adr`` -- the route must be
+    free of host syncs, because it runs inside the recorded substep.
     Returns True when the batch ran."""
     if not _enabled("MJLAB_SYCL_NATIVE_CHOL"):
         return False
@@ -123,7 +125,7 @@ def chol_fs(M, y, x, L, n: int, nv_pad: int) -> bool:
     fn = _fn_chol_fs
     if fn is None:
         return False
-    return fn(M.ptr, y.ptr, x.ptr, L.ptr, n, nv_pad, M.shape[0]) == 0
+    return fn(M.ptr, y.ptr, x.ptr, L.ptr, adr.ptr, n, nv_pad, M.shape[0]) == 0
 
 
 def hinc(J, D, state, changed_ids, changed_count, h, nv_pad: int,

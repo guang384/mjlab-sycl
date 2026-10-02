@@ -239,37 +239,42 @@ namespace {
 
 template <int N>
 static void chol_fs_submit(sycl::queue& q, const float* M, const float* y,
-                           float* x, float* L, long long stride,
-                           long long batch) {
+                           float* x, float* L, const int* adr,
+                           long long stride, long long batch) {
     q.parallel_for(sycl::range<1>(static_cast<size_t>(batch)),
                    [=](sycl::id<1> idx) {
         const int w = static_cast<int>(idx.get(0));
+        // tile anchor read device-side: a host read here would sync the
+        // queue mid-step, which is illegal inside command-graph recording
+        const int off = adr[0];
         float* Lw = L + static_cast<size_t>(w) * stride * stride;
         const float* Mw = M + static_cast<size_t>(w) * stride * stride;
         const float* yw = y + static_cast<size_t>(w) * stride;
         float* xw = x + static_cast<size_t>(w) * stride;
         for (int i = 0; i < N; ++i) {
             for (int j = 0; j <= i; ++j) {
-                float s = Mw[i * stride + j];
+                float s = Mw[(off + i) * stride + (off + j)];
                 for (int k = 0; k < j; ++k)
-                    s -= Lw[i * stride + k] * Lw[j * stride + k];
-                if (i == j) Lw[i * stride + i] = ::sqrtf(s);
-                else Lw[i * stride + j] = s / Lw[j * stride + j];
+                    s -= Lw[(off + i) * stride + (off + k)] *
+                         Lw[(off + j) * stride + (off + k)];
+                if (i == j) Lw[(off + i) * stride + (off + i)] = ::sqrtf(s);
+                else Lw[(off + i) * stride + (off + j)] = s / Lw[(off + j) * stride + (off + j)];
             }
         }
         for (int i = 0; i < N; ++i) {
-            float s = yw[i];
-            for (int k = 0; k < i; ++k) s -= Lw[i * stride + k] * xw[k];
-            xw[i] = s / Lw[i * stride + i];
+            float s = yw[off + i];
+            for (int k = 0; k < i; ++k)
+                s -= Lw[(off + i) * stride + (off + k)] * xw[off + k];
+            xw[off + i] = s / Lw[(off + i) * stride + (off + i)];
         }
         for (int i = 0; i < N; ++i) {
             const int ii = N - 1 - i;
-            float s = xw[ii];
+            float s = xw[off + ii];
             for (int k = 0; k < N - 1 - ii; ++k) {
                 const int kk = N - 1 - k;
-                s -= Lw[kk * stride + ii] * xw[kk];
+                s -= Lw[(off + kk) * stride + (off + ii)] * xw[off + kk];
             }
-            xw[ii] = s / Lw[ii * stride + ii];
+            xw[off + ii] = s / Lw[(off + ii) * stride + (off + ii)];
         }
     });
 }
@@ -717,21 +722,21 @@ WP_SYCL_API int wp_sycl_chol_solve(const void* h, const void* grad,
 
 
 WP_SYCL_API int wp_sycl_chol_fs(const void* M, const void* y, void* x,
-                                void* L, long long n, long long stride,
-                                long long batch) {
+                                void* L, const int* adr, long long n,
+                                long long stride, long long batch) {
     if (batch <= 0 || n <= 0) return 0;
     try {
         sycl::queue& q = the_queue();
         g_last_kernel.store("wp_sycl_chol_fs");
         switch (n) {
-        case 4:  chol_fs_submit<4>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), stride, batch); return 0;
-        case 8:  chol_fs_submit<8>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), stride, batch); return 0;
-        case 12: chol_fs_submit<12>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), stride, batch); return 0;
-        case 16: chol_fs_submit<16>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), stride, batch); return 0;
-        case 20: chol_fs_submit<20>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), stride, batch); return 0;
-        case 24: chol_fs_submit<24>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), stride, batch); return 0;
-        case 28: chol_fs_submit<28>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), stride, batch); return 0;
-        case 32: chol_fs_submit<32>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), stride, batch); return 0;
+        case 4:  chol_fs_submit<4>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), adr, stride, batch); return 0;
+        case 8:  chol_fs_submit<8>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), adr, stride, batch); return 0;
+        case 12: chol_fs_submit<12>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), adr, stride, batch); return 0;
+        case 16: chol_fs_submit<16>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), adr, stride, batch); return 0;
+        case 20: chol_fs_submit<20>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), adr, stride, batch); return 0;
+        case 24: chol_fs_submit<24>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), adr, stride, batch); return 0;
+        case 28: chol_fs_submit<28>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), adr, stride, batch); return 0;
+        case 32: chol_fs_submit<32>(q, static_cast<const float*>(M), static_cast<const float*>(y), static_cast<float*>(x), static_cast<float*>(L), adr, stride, batch); return 0;
         default: return -5;
         }
     } catch (std::exception const& e) {

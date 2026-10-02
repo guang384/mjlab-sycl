@@ -8,6 +8,18 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **Native set-const chol_fs + incremental Hessian hinc kernels**
+  (`wp_sycl_chol_fs`, `wp_sycl_hinc`; kill switches `MJLAB_SYCL_NATIVE_CHOL`
+  / `MJLAB_SYCL_NATIVE_HINC`): the set-const single-tile factorize+solve and
+  the changed-constraint Hessian delta. chol_fs's tile anchor is read
+  device-side from the adr array so the route is host-sync-free (a host read
+  in the route aborted the step-graph recording); hinc's route re-issues the
+  gradient launches verbatim and replaces ONLY the Hessian-delta kernel --
+  the first version replaced the whole _update_gradient_incremental and
+  silently skipped the gradient computation (a fake +23 % that was broken
+  physics; caught by contract review before landing). Quiet-machine A/B:
+  hinc +1.7-4.0 %; full 5-kernel native suite vs all-off: 16,875/16,856 ->
+  18,796/18,505 env-steps/s (+9.8-11.4 %). Gates pass at 3.308e-06.
 - **Native solver-cholesky kernel** (`wp_sycl_chol_solve`,
   `MJLAB_SYCL_NATIVE_CHOL=0` to disable): LLT + forward/back substitution
   per world with per-size template instantiation (4..32) keeping the

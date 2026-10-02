@@ -132,6 +132,61 @@ def install() -> None:
   if _orig_launch_tiled is not None:
     return
 
+  # h_incremental native route: mujoco_warp's _update_gradient_incremental
+  # launches THREE kernels (zero_grad_dot, grad, h_incremental); only the
+  # last is replaced -- the two gradient launches are re-issued verbatim,
+  # because replacing the whole function silently skips the gradient and
+  # "speeds up" broken physics. Host-sync-free routing (flag check only)
+  # so the graph's count and record runs agree. Kill switch:
+  # MJLAB_SYCL_NATIVE_HINC=0.
+  try:
+    from mujoco_warp._src import solver as _mw_solver
+
+    _orig_hinc = _mw_solver._update_gradient_incremental
+    _hinc_zero = _mw_solver.update_gradient_zero_grad_dot
+    _hinc_grad = _mw_solver.update_gradient_grad
+    _hinc_sparse = _mw_solver.update_gradient_h_incremental_sparse
+    _hinc_dense = _mw_solver.update_gradient_h_incremental
+
+    def _hinc_patched(m, d, ctx):
+      from mjlab_sycl import native_kernels
+
+      wp.launch(_hinc_zero, dim=(d.nworld), inputs=[ctx.done],
+                outputs=[ctx.grad_dot])
+      wp.launch(
+        _hinc_grad,
+        dim=(d.nworld, m.nv),
+        inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
+        outputs=[ctx.grad, ctx.grad_dot],
+      )
+      if not m.is_sparse and native_kernels.hinc(
+          d.efc.J, d.efc.D, d.efc.state, ctx.changed_efc_ids,
+          ctx.changed_efc_count, ctx.h, m.nv_pad, d.efc.D.shape[1],
+          ctx.changed_efc_ids.shape[1],
+      ):
+        return  # the native Hessian-delta kernel ran
+      if m.is_sparse:
+        wp.launch(
+          _hinc_sparse,
+          dim=(d.nworld, ctx.changed_efc_ids.shape[1]),
+          inputs=[d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind,
+                  d.efc.J, d.efc.D, d.efc.state,
+                  ctx.changed_efc_ids, ctx.changed_efc_count],
+          outputs=[ctx.h],
+        )
+      else:
+        wp.launch(
+          _hinc_dense,
+          dim=(d.nworld, m.nv * (m.nv + 1) // 2),
+          inputs=[d.efc.J, d.efc.D, d.efc.state,
+                  ctx.changed_efc_ids, ctx.changed_efc_count],
+          outputs=[ctx.h],
+        )
+
+    _mw_solver._update_gradient_incremental = _hinc_patched
+  except Exception as e:
+    print(f"[sycl-flat] hinc native route probe failed ({e!r})")
+
   # wrap the solver-cholesky factory so each kernel object records its nv
   # (the tile_size factory argument — the only unpadded dimension source)
   try:
@@ -265,6 +320,16 @@ def install() -> None:
       adr = kwargs["inputs"][2]
       n = _adr_tile_size(adr, kwargs["outputs"][0].shape[1])
       nworld = nworld_from(kwargs)
+      from mjlab_sycl import native_kernels
+
+      # single-tile case only; the anchor is read device-side by the kernel,
+      # so this decision is host-sync-free and identical for the graph's
+      # count and record runs (a sync here would abort recording)
+      if adr.shape[0] == 1 and native_kernels.chol_fs(
+          kwargs["inputs"][0], kwargs["inputs"][1], kwargs["outputs"][0],
+          kwargs["outputs"][1], adr, n, kwargs["outputs"][0].shape[1],
+      ):
+        return  # the native kernel ran; suppress the warp launch
       return wp.launch(
         _get_chol_fs_kernel(n),
         # one work-item per (world, tile): a bare nworld dim left nodeid
