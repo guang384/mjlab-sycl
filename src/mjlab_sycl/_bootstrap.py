@@ -139,6 +139,21 @@ def preload_oneapi_sycl_runtime(oneapi_bin: str) -> None:
         pass  # optional component: leave the loader free to find another copy
 
 
+def find_pip_bin() -> str:
+  """Resolve the pip-installed SYCL runtime dir (torch's dpcpp-cpp-rt
+  layout <prefix>/Library/bin), or "" when absent. WARP_SYCL_PIP_BIN wins
+  when set. Shared by the PATH bootstrap and the doctor."""
+  env = os.environ.get("WARP_SYCL_PIP_BIN", "")
+  if env:
+    return env
+  for site in [p for p in sys.path if p.endswith("site-packages")]:
+    prefix = os.path.dirname(os.path.dirname(site))  # <venv>/Lib/site-packages
+    hits = sorted(glob.glob(os.path.join(prefix, "Library", "bin")))
+    if hits:
+      return hits[0]
+  return ""
+
+
 def cold_cache_notice() -> None:
   """Tell the user what the one-time kernel compile is BEFORE it happens.
 
@@ -191,17 +206,7 @@ def configure_torch_threads(default: int = 2) -> None:
 
 def prepare_sycl_runtime_path() -> None:
   oneapi = find_oneapi_bin()
-  pip_bin = os.environ.get("WARP_SYCL_PIP_BIN", "")
-  if not pip_bin:
-    # pip installs a wheel's data files relative to the PREFIX root, i.e.
-    # <venv>/Library/bin -- not under site-packages. Fall back to a
-    # site-packages-relative probe for --prefix layouts.
-    for site in [p for p in sys.path if p.endswith("site-packages")]:
-      prefix = os.path.dirname(os.path.dirname(site))  # <venv>/Lib/site-packages
-      hits = sorted(glob.glob(os.path.join(prefix, "Library", "bin")))
-      if hits:
-        pip_bin = hits[0]
-        break
+  pip_bin = find_pip_bin()
   if oneapi and os.path.isdir(oneapi):
     # prepend: warp's warpsycl.dll must resolve the oneAPI sycl8.dll
     os.environ["PATH"] = oneapi + os.pathsep + os.environ["PATH"]

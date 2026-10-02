@@ -71,7 +71,8 @@ platform, overlay sync, oneAPI runtime, GPU, torch XPU and the task
 registry with a per-item fix when something is missing.
 
 See **[README-SYCL-TRAINING.md](README-SYCL-TRAINING.md)** for requirements
-(Windows + Python 3.12 + Intel GPU + oneAPI), the full install/usage story,
+(Windows + Python 3.12 + Intel GPU + a ~50 MB SYCL runtime pip install —
+the multi-GB oneAPI toolkit is only needed to rebuild the backend), the full install/usage story,
 verification gates, environment variables and the hard-won footguns.
 
 ## Measured performance

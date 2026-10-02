@@ -26,10 +26,22 @@ footguns).
 - Windows, Python 3.12
 - Intel Arc iGPU (developed on Arc 130T / Lunar Lake)
 - mjlab 1.3.0, mujoco-warp, warp-lang 1.12.0, torch 2.9.1 (pinned in the package)
-- Intel oneAPI 2025.x compiler runtime, at least as new as 2025.3 (the
-  version `warpsycl.dll` was built with). Auto-discovered as the newest
-  `compiler/<ver>/bin` under `C:/Program Files (x86)/Intel/oneAPI` or
-  `C:/Program Files/Intel/oneAPI`; override with `WARP_SYCL_ONEAPI_BIN`
+- **SYCL 2025.3+ runtime** — ~50 MB of pip wheels, no toolkit needed at
+  runtime (audited: `warpsycl.dll` imports only `sycl8.dll` + `libmmd.dll`
+  beyond the Windows system set, and the wheels cover both; verified to
+  enumerate the GPU with the toolkit absent from PATH):
+
+      pip install "intel-sycl-rt==2025.3.3" "dpcpp-cpp-rt==2025.3.3"
+
+  torch-xpu pins the 2025.2 wheels, which are one export too old for
+  `warpsycl.dll` (WinError 127) — the upgrade is intentional and torch is
+  forward-compatible with the newer runtime (pip prints a pin warning).
+  The multi-GB Intel oneAPI 2025.3+ toolkit is only needed to REBUILD
+  `warpsycl.dll` (dev). Auto-discovery order: oneAPI's `compiler/<ver>/bin`
+  under `C:/Program Files (x86)/Intel/oneAPI` (then `C:/Program Files/Intel/oneAPI`),
+  else the venv's `Library/bin` pip runtime; override with
+  `WARP_SYCL_ONEAPI_BIN`. `mjlab-sycl-check` reports which runtime loaded
+  and its version.
 
 ## Install
 

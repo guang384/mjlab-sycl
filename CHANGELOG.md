@@ -8,6 +8,18 @@ All notable changes to mjlab-sycl.
      tagging. -->
 
 ### Added
+- **No more multi-GB toolkit at runtime**: the oneAPI dependency is
+  demoted to a dev-only requirement (rebuilding warpsycl.dll). The
+  audited import table of warpsycl.dll is just sycl8.dll + libmmd.dll
+  beyond the Windows system set, and the ~50 MB pip wheels cover both:
+  `pip install "intel-sycl-rt==2025.3.3" "dpcpp-cpp-rt==2025.3.3".
+  Verified with scripts/bench/rt_only_test.py: warpsycl.dll loads and
+  enumerates the GPU with only the wheels on PATH (the 2025.2 wheels
+  torch-xpu pins fail with WinError 127, exactly as documented).
+  `mjlab-sycl-check` now checks SYCL-runtime >= 2025.3 from EITHER
+  source and reports the loaded version; setup_microduck.ps1 installs
+  the wheels automatically when no toolkit is present; both READMEs
+  document the lightweight requirement.
 - **First-run UX**: the one-time kernel JIT (~3.5 min, 108 modules)
   no longer ambushes newcomers -- train/bench print a notice before it
   happens, and `mjlab-sycl-install --warmup [TASK]` pays the cost at

@@ -7,7 +7,8 @@ Runs every check that decides whether mjlab-sycl can train here and prints a
   1. platform: Windows, Python 3.12
   2. warp 1.12.0 installed (the version the vendored backend targets)
   3. warp SYCL backend overlay in sync with this package (see install.py)
-  4. Intel oneAPI runtime present (sycl8.dll / icx on PATH for kernel builds)
+  4. SYCL runtime >= 2025.3 present (oneAPI toolkit OR the ~50 MB
+     intel-sycl-rt pip wheels; oneAPI is only needed to rebuild the backend)
   5. the `sycl` device comes up and names an Intel GPU
   6. a real device kernel compiles and matches the cpu device (small, cached)
   7. torch XPU available (the PPO device used by the training entries)
@@ -118,19 +119,53 @@ def main() -> None:
     for p in problems[1:]:
       print(f"         - {p.splitlines()[0]}")
 
-  # 4. oneAPI runtime -----------------------------------------------------------
-  oneapi_bin = find_oneapi_bin()
-  if oneapi_bin:
-    has_runtime = os.path.isfile(os.path.join(oneapi_bin, "sycl8.dll")) or os.path.isfile(
-      os.path.join(oneapi_bin, "icx.exe")
-    )
-  else:
-    has_runtime = False
+  # 4. SYCL runtime >= 2025.3 (oneAPI toolkit OR the pip wheels) -----------------
+  # warpsycl.dll only needs sycl8.dll + libmmd.dll at runtime (its full
+  # import table was audited); the ~50 MB intel-sycl-rt wheels cover that,
+  # so the multi-GB oneAPI toolkit is a DEV dependency (rebuilding
+  # warpsycl.dll) -- not a runtime one.
+  from mjlab_sycl._bootstrap import find_pip_bin
+
+  def _dll_version(path):
+    try:
+      import ctypes
+
+      ver = ctypes.WinDLL("version.dll")
+      size = ver.GetFileVersionInfoSizeW(path, None)
+      if not size:
+        return None
+      buf = ctypes.create_string_buffer(size)
+      if not ver.GetFileVersionInfoW(path, 0, size, buf):
+        return None
+      lplp = ctypes.c_void_p()
+      ln = ctypes.c_uint()
+      if not ver.VerQueryValueW(buf, "\\", ctypes.byref(lplp), ctypes.byref(ln)):
+        return None
+      ffi = ctypes.cast(lplp.value, ctypes.POINTER(ctypes.c_uint32))
+      ms, ls = ffi[2], ffi[3]
+      return (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
+    except Exception:
+      return None
+
+  runtime_src = None
+  for src in (
+      os.path.join(find_oneapi_bin(), "sycl8.dll"),
+      os.path.join(find_pip_bin(), "sycl8.dll"),
+  ):
+    if os.path.isfile(src):
+      runtime_src = src
+      break
+  runtime_ver = _dll_version(runtime_src) if runtime_src else None
+  runtime_ok = runtime_ver is not None and runtime_ver >= (2025, 3)
+  ver_txt = ".".join(map(str, runtime_ver)) if runtime_ver else "?"
+  src_txt = f"{runtime_src} (v{ver_txt})" if runtime_src else "sycl8.dll not found"
   ok_all &= _check(
-    "Intel oneAPI runtime",
-    has_runtime,
-    oneapi_bin or "not found",
-    "install Intel oneAPI 2025.x (or set WARP_SYCL_ONEAPI_BIN to its compiler bin dir)",
+    "SYCL runtime >= 2025.3 (oneAPI or intel-sycl-rt wheels)",
+    runtime_ok,
+    src_txt,
+    'no toolkit needed at runtime -- pip install "intel-sycl-rt==2025.3.3" '
+    '"dpcpp-cpp-rt==2025.3.3" (~50 MB); oneAPI 2025.3+ is only required to '
+    "rebuild warpsycl.dll (set WARP_SYCL_ONEAPI_BIN for a custom location)",
   )
 
   # 5. sycl device --------------------------------------------------------------

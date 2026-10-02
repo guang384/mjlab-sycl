@@ -56,7 +56,7 @@ if (-not (Test-Path -LiteralPath $ProjectPy)) {
 
 $Py = Join-Path $RepoPath ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $Py)) {
-  Step-Hint "1/5  .venv missing -> uv sync $RepoPath"
+  Step-Hint "1/6  .venv missing -> uv sync $RepoPath"
   if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Step-Fail "uv is required to create the project venv. Install uv (https://docs.astral.sh/uv/) then re-run."
     exit 1
@@ -66,14 +66,14 @@ if (-not (Test-Path -LiteralPath $Py)) {
   finally { Pop-Location }
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
-  Step-Hint "1/5  project venv present: $Py"
+  Step-Hint "1/6  project venv present: $Py"
 }
 Step-Ok "using venv python: $Py"
 
 # 2. install this package into the venv (editable, no deps: the project
 # already provides mjlab/warp/torch; this keeps the package's source live).
 $Pkg = Split-Path -Parent $PSScriptRoot   # mjlab-sycl repo root (parent of scripts/)
-Step-Hint "2/5  installing mjlab-sycl (editable) into the project venv"
+Step-Hint "2/6  installing mjlab-sycl (editable) into the project venv"
 $pipArgs = @("-m", "pip", "install", "--isolated", "--no-deps", "-e", $Pkg)
 if ($PipIndex) { $pipArgs += @("--index-url", $PipIndex) }
 & $Py @pipArgs
@@ -81,20 +81,38 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # 3. per-machine torch XPU (optional here; doctor reports it when missing)
 if ($InstallTorchXpu) {
-  Step-Hint "3/5  installing torch==2.9.1+xpu from the PyTorch XPU index (~2 GB)"
+  Step-Hint "3/6  installing torch==2.9.1+xpu from the PyTorch XPU index (~2 GB)"
   & $Py -m pip install --isolated --no-deps "torch==2.9.1+xpu" --index-url https://download.pytorch.org/whl/xpu
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
-  Step-Hint "3/5  skipping torch XPU install (use -InstallTorchXpu to fetch it)"
+  Step-Hint "3/6  skipping torch XPU install (use -InstallTorchXpu to fetch it)"
 }
 
 # 4. overlay the warp SYCL backend + self-check
-Step-Hint "4/5  python -m mjlab_sycl install (warp backend overlay)"
+# SYCL 2025.3+ runtime: warpsycl.dll needs sycl8.dll 2025.3+; torch-xpu
+  # pins the 2025.2 wheels (one export too old, WinError 127). The ~50 MB
+  # pip wheels replace the multi-GB oneAPI toolkit at runtime -- install
+  # them only when no oneAPI toolkit is present (its runtime wins PATH).
+  $oneapi = @("C:\Program Files (x86)\Intel\oneAPI", "C:\Program Files\Intel\oneAPI") |
+    Where-Object { Test-Path (Join-Path $_ "compiler") }
+  if (-not $oneapi) {
+    Step-Hint "4/6  no oneAPI toolkit -> installing the ~50 MB SYCL 2025.3 runtime wheels"
+    & $Py -m pip install --isolated "intel-sycl-rt==2025.3.3" "dpcpp-cpp-rt==2025.3.3"
+    if ($LASTEXITCODE -ne 0) {
+      Step-Fail "could not install the SYCL runtime wheels (see README-SYCL-TRAINING.md Requirements)"
+      exit 1
+    }
+    Step-Ok "SYCL runtime 2025.3 installed from pip wheels"
+  } else {
+    Step-Hint "4/6  oneAPI toolkit found -> runtime covered (pip wheels not needed)"
+  }
+
+  Step-Hint "5/6  python -m mjlab_sycl install (warp backend overlay)"
 & $Py -m mjlab_sycl install
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # 5. read-only environment preflight
-Step-Hint "5/5  mjlab-sycl-check (environment preflight)"
+Step-Hint "6/6  mjlab-sycl-check (environment preflight)"
 & $Py -m mjlab_sycl.doctor
 $code = $LASTEXITCODE
 
