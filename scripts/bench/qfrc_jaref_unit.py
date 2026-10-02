@@ -41,10 +41,6 @@ JVw = wp.array(JV, dtype=float, device="sycl")
 Aw = wp.array(ALPHA, dtype=float, device="sycl")
 Cw = wp.array(COST, dtype=float, device="sycl")
 
-def run_jaref(native):
-    Jaref0 = rng.random((NW, NJMAX)).astype(np.float32)  # fixed below
-    return Jaref0
-
 Jaref_init = rng.random((NW, NJMAX)).astype(np.float32)
 outs = {}
 for label, native in (("warp", False), ("natv", True)):
@@ -59,13 +55,11 @@ for label, native in (("warp", False), ("natv", True)):
         ok = native_kernels.jaref(JVw, Aw, Nw, Dw, Cw, Ja, gauss, cost, prev,
                                   gdot, sdot, chg)
     else:
+        # zero-ahead outputs appended exactly like the interceptor does
         wp.launch(_jaref_zeroahead, dim=(NW, NJMAX),
-                  inputs=[Nw, JVw, Aw, Dw, Cw], outputs=[Ja],
-                  # zero-ahead outputs appended like the interceptor does
-                  outputs2=None, device="sycl") if False else wp.launch(
-            _jaref_zeroahead, dim=(NW, NJMAX),
-            inputs=[Nw, JVw, Aw, Dw, Cw],
-            outputs=[Ja, gauss, cost, prev, gdot, sdot, chg], device="sycl")
+                  inputs=[Nw, JVw, Aw, Dw, Cw],
+                  outputs=[Ja, gauss, cost, prev, gdot, sdot, chg],
+                  device="sycl")
         ok = "warp"
     wp.synchronize_device("sycl")
     outs[label] = (Ja.numpy().copy(), gauss.numpy().copy(), cost.numpy().copy(),

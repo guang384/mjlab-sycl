@@ -179,6 +179,11 @@ All notable changes to mjlab-sycl.
   −35.0 ± 3.9 ms/step (−12.7%).
 
 ### Changed
+- Final pre-release audit pass: removed two superseded debug scripts
+  (a dead PDH experiment and the non-deterministic cross-process parity
+  runner), cleaned an experimental hack out of the qfrc/jaref unit test,
+  refreshed the stale performance figure in README-SYCL-TRAINING (~15.8k
+  -> ~22k quiet-desktop), and normalized measurement-note wording.
 - `scripts/probe_kernel_times.py` now annotates its report with what
   actually executed: the hook sits outside the fusion interceptors, so
   fused executions were timed under pre-fusion names (times real, names

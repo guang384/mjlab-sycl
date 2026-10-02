@@ -220,9 +220,10 @@ is the only reliable detector.
 
 ## Performance (Arc 130T, microduck velocity, 4096 envs)
 
-- ~15,800 env-steps/s end-to-end vs ~258 on the CPU device; the 0.2.0
-  archive measured 5,485 — every gain since is itemized in
-  docs/performance.md.
+- ~22,000 env-steps/s end-to-end on a quiet desktop vs ~258 on the CPU
+  device (the 0.2.0 archive measured 5,485) — every gain since is
+  itemized in docs/performance.md. A background GPU app costs 10–45 % of
+  throughput; the train/bench entries warn at startup.
 - Numerics: `max |sycl − cpu|` over 100-step rollouts on the same
   model/actions ≈ 2–3e-06.
 - Microbenchmark: 16M-float saxpy ~7.5× CPU bandwidth.

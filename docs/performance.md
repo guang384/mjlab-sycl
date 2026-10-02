@@ -54,12 +54,12 @@ python scripts\probe_efc_audit.py --num-envs 512 --steps 30
   09-30 best is device clock/thermal state, not workload or code (a
   warm-device run on 2026-10-02 landed back at 7.0 s/iter).  The
   compute engine sits at ~97 % busy during the bench (GPU-bound); desktop
-  compositing (dwm/ZCode/TeleAgent) holds ~20 % of the shared 3D engine in
+  compositing (dwm and whatever the desktop shows) holds ~20 % of the shared 3D engine in
   both sessions -- constant contention, not the variable.  Read every
   number in this file with a +-20 % session error bar.
 
-  RE-ATTRIBUTION (2026-10-02): the operator reports the slow historical
-  sessions ran with co-occurring GPU apps (video playback et al.), making
+  RE-ATTRIBUTION (2026-10-02): the slow historical sessions ran with
+  co-occurring GPU apps (video playback et al.), making
   BUS CONTENTION -- not thermals -- the leading variance driver. Measured
   the same day: a background torch.xpu copy hog at ~50 % duty (~85 GB/s
   while active) drops the bench from 14,453 to 8,000 env-steps/s (-45 %);
