@@ -4,8 +4,12 @@ All notable changes to mjlab-sycl.
 
 ## [Unreleased]
 
-<!-- Add new changes here as they land; fold into a dated release section when
-     tagging. -->
+### Fixed
+
+- train: drop a dead `task_names` block left over from the taskcheck
+  refactor — it crashed every `mjlab-sycl-train` invocation with a
+  NameError before device setup (caught on the side-roll smoke test,
+  2026-10-03). resolve_task_or_exit already covers the unknown-task path.
 
 ## [0.3.0] - 2026-10-02 — performance + memory + quality release
 

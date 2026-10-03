@@ -58,16 +58,6 @@ def main() -> None:
     print_task_list(registered_tasks())
     return
   args.task = resolve_task_or_exit(args.task, "mjlab-sycl-train")
-  if args.task not in task_names:
-    print(f"[train-sycl] unknown task: {args.task!r}", flush=True)
-    close = difflib.get_close_matches(args.task, task_names, n=5, cutoff=0.35)
-    if close:
-      print("  did you mean: " + ", ".join(close), flush=True)
-    print(f"  {len(task_names)} tasks are registered in this venv "
-          "(names come from the task package, e.g. microduck_rl's "
-          "tasks/__init__.py); list them with:", flush=True)
-    print("    mjlab-sycl-train --list-tasks", flush=True)
-    raise SystemExit(1)
 
   # physics is bus-bound: a background GPU app costs 10-45% of throughput
   # (docs/performance.md) -- warn before hours go into a contended run
